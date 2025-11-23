@@ -1,7 +1,6 @@
 const express = require("express");
-const qrcode = require("qrcode");
-const speakeasy = require("speakeasy");
 const employeeController = require("../controllers/employeeController");
+const { authenticateToken } = require("../middleware/authMiddleware");
  
 const router = express.Router();
 

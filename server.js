@@ -49,9 +49,6 @@
 
 // module.exports = app;
 
-// Load environment variables from .env file
-require('dotenv').config();
-
 const { db, admin } = require("./config/firebaseConfig");
 
 const express = require("express");
