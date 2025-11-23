@@ -58,7 +58,7 @@ const path = require("path");
 const authRoutes = require("./routes/authRoutes");
 const employeeRoutes = require("./routes/employeeRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
-const leaveRoutes = require("./routes/leaveRoutes");
+// const leaveRoutes = require("./routes/leaveRoutes"); // TODO: Uncomment when leaveController.js is created
 const lineRoutes = require("./routes/lineRoutes");
 const resignationRoutes = require("./routes/resignationRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
@@ -169,7 +169,7 @@ app.get("/terms-of-service", (req, res) => {
 app.use("/auth", authRoutes);
 app.use("/employee", employeeRoutes);
 app.use("/attendance", attendanceRoutes);
-app.use("/leave", leaveRoutes);
+// app.use("/leave", leaveRoutes); // TODO: Uncomment when leaveController.js is created
 app.use("/line", lineRoutes);
 app.use("/resignation", resignationRoutes);
 app.use("/notifications", notificationRoutes);
