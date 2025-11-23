@@ -148,15 +148,22 @@ const checkEmployee = async (req, res) => {
 
 const checkEmployeeAuth = async (req, res) => {
     try {
-        const { authId } = req.params;
-        console.log("checkEmployee called with authId:", authId);
+        const { authId } = req.body;
+        console.log("checkEmployeeAuth called with authId:", authId);
+
+        if (!authId) {
+            return res.status(400).json({
+                success: false,
+                message: "authId is required"
+            });
+        }
 
         const employeesRef = db.collection("employees");
         const querySnapshot = await employeesRef.where("authId", "==", authId).get();
 
         if (querySnapshot.empty) {
             return res.json({
-            success: true,
+                success: true,
                 message: "Employee not found",
                 employeeExists: false
             });
