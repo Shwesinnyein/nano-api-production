@@ -21,6 +21,16 @@ const admin = require("firebase-admin");
 
 
 console.log("admin", admin);
+
+if (!process.env.FIREBASE_ADMIN_CREDENTIALS) {
+  throw new Error(
+    "FIREBASE_ADMIN_CREDENTIALS environment variable is not set.\n" +
+    "Please create a .env file in the project root with:\n" +
+    "FIREBASE_ADMIN_CREDENTIALS='{\"type\":\"service_account\",...}'\n" +
+    "See .env.example for reference."
+  );
+}
+
 const firebaseConfig = JSON.parse(process.env.FIREBASE_ADMIN_CREDENTIALS);
 
 
