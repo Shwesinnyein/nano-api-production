@@ -326,7 +326,7 @@ const getLeaveSettings = async (req, res) => {
                 message: "No leave settings found",
                 data: [],
                 count: 0,
-                employeeEligible: employeeEligible,
+                employeeEligibleForAnnualLeave: employeeEligibleForAnnualLeave,
                 monthsWithCompany: monthsWithCompany,
                 requiredMonths: 3,
                 employeeGender: employeeGender
