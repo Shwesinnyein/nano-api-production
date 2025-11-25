@@ -173,6 +173,21 @@ const buildApproverNotificationContent = (level, { employeeName, leaveTypeName, 
     }
 };
 
+// Helper function to check if a leave type is annual leave
+const isAnnualLeave = (leaveTypeName, leaveTypeNameEng) => {
+    if (!leaveTypeName && !leaveTypeNameEng) return false;
+    
+    const name = (leaveTypeName || '').toLowerCase();
+    const nameEng = (leaveTypeNameEng || '').toLowerCase();
+    
+    // Check for common annual leave identifiers
+    const annualKeywords = ['annual', 'ลาปี', 'ลา', 'yearly'];
+    
+    return annualKeywords.some(keyword => 
+        name.includes(keyword) || nameEng.includes(keyword)
+    );
+};
+
 const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
     console.log('📨 findApproverIdsByLevel:', level, employeeId, branchCode ? `branch: ${branchCode}` : '');
     const employeesRef = db.collection("employees");
@@ -257,8 +272,8 @@ const getLeaveSettings = async (req, res) => {
     try {
         const { gender, employeeId } = req.query;
         
-        // Step 1: If employeeId is provided, FIRST check if employee is eligible (3+ months)
-        let employeeEligible = true;
+        // Step 1: If employeeId is provided, check months with company (for annual leave filtering)
+        let employeeEligibleForAnnualLeave = true;
         let monthsWithCompany = 0;
         let employeeGender = null;
         
@@ -288,23 +303,9 @@ const getLeaveSettings = async (req, res) => {
                     monthsWithCompany -= 1;
                 }
                 
-                employeeEligible = monthsWithCompany >= 3;
+                // Employee is eligible for annual leave only if 3+ months
+                employeeEligibleForAnnualLeave = monthsWithCompany >= 3;
                 employeeGender = employeeData.gender;
-                
-                
-                // If not eligible, return empty array immediately
-                if (!employeeEligible) {
-                    return res.json({
-                        success: true,
-                        message: `Employee must be with company for 3+ months to access leave types. Current: ${monthsWithCompany} months`,
-                        data: [],
-                        count: 0,
-                        employeeEligible: false,
-                        monthsWithCompany: monthsWithCompany,
-                        requiredMonths: 3,
-                        employeeGender: employeeGender
-                    });
-                }
             } catch (error) {
                 console.error("Error checking employee eligibility:", error);
                 return res.status(500).json({
@@ -336,11 +337,14 @@ const getLeaveSettings = async (req, res) => {
         const leaveSettings = [];
         snapshot.forEach(doc => {
             const leaveSettingData = doc.data();
+            const leaveTypeName = leaveSettingData.leaveTypeName || leaveSettingData.leave || leaveSettingData.title;
+            const leaveTypeNameEng = leaveSettingData.leaveTypeNameEng || leaveSettingData.titleEng;
+            
             leaveSettings.push({
                 id: doc.id,
                 uid: leaveSettingData.uid,
-                leaveType: leaveSettingData.leaveTypeName || leaveSettingData.leave || leaveSettingData.title,
-                leaveTypeEng: leaveSettingData.leaveTypeNameEng || leaveSettingData.titleEng,
+                leaveType: leaveTypeName,
+                leaveTypeEng: leaveTypeNameEng,
                 maxDays: leaveSettingData.leaveDay,
                 isPaid: leaveSettingData.type === 'Paid' || leaveSettingData.isPaid === true,
                 gender: leaveSettingData.gender,
@@ -355,7 +359,7 @@ const getLeaveSettings = async (req, res) => {
         let filteredLeaveSettings = leaveSettings;
         let filterGender = null;
         
-        if (employeeId && employeeEligible && employeeGender) {
+        if (employeeId && employeeGender) {
             // Use employee's gender for filtering
             filterGender = employeeGender;
         } else if (gender && ['male', 'female', 'all'].includes(gender.toLowerCase())) {
@@ -369,10 +373,21 @@ const getLeaveSettings = async (req, res) => {
                 setting.gender.toLowerCase() === 'all'
             );
         }
+        
+        // Step 5: Filter out annual leave if employee is not eligible (< 3 months)
+        if (employeeId && !employeeEligibleForAnnualLeave) {
+            filteredLeaveSettings = filteredLeaveSettings.filter(setting => 
+                !isAnnualLeave(setting.leaveType, setting.leaveTypeEng)
+            );
+        }
 
         let message = "Leave settings retrieved successfully";
         if (employeeId) {
-            message = `Leave settings for ${employeeGender} employee (${monthsWithCompany} months with company)`;
+            if (employeeEligibleForAnnualLeave) {
+                message = `Leave settings for ${employeeGender} employee (${monthsWithCompany} months with company) - All leave types available`;
+            } else {
+                message = `Leave settings for ${employeeGender} employee (${monthsWithCompany} months with company) - Annual leave available after 3 months`;
+            }
         }
 
         res.json({
@@ -380,7 +395,7 @@ const getLeaveSettings = async (req, res) => {
             message: message,
             count: filteredLeaveSettings.length,
             data: filteredLeaveSettings,
-            employeeEligible: employeeEligible,
+            employeeEligibleForAnnualLeave: employeeEligibleForAnnualLeave,
             monthsWithCompany: monthsWithCompany,
             requiredMonths: 3,
             employeeGender: employeeGender
@@ -433,18 +448,8 @@ const getEmployeeLeaveList = async (req, res) => {
             monthsDiff -= 1;
         }
 
-        // Check if employee has been with company for 3+ months
-        if (monthsDiff < 3) {
-            return res.json({
-                success: true,
-                message: "Employee must be with company for 3+ months to access leave data",
-                data: [],
-                count: 0,
-                eligible: false,
-                monthsWithCompany: monthsDiff,
-                requiredMonths: 3
-            });
-        }
+        // Check if employee is eligible for annual leave (3+ months)
+        const eligibleForAnnualLeave = monthsDiff >= 3;
 
         // Get employee leave records filtered by employeeId (login user UID)
         const employeeLeaveRef = db.collection("employee-leave");
@@ -460,21 +465,30 @@ const getEmployeeLeaveList = async (req, res) => {
                 message: "No leave records found for this employee",
                 data: [],
                 count: 0,
-                eligible: true,
-                monthsWithCompany: monthsDiff
+                eligibleForAnnualLeave: eligibleForAnnualLeave,
+                monthsWithCompany: monthsDiff,
+                requiredMonths: 3
             });
         }
 
         const leaveRecords = [];
         querySnapshot.forEach(doc => {
             const leaveData = doc.data();
+            const leaveTypeName = leaveData.leaveTypeName;
+            const leaveTypeNameEng = leaveData.leaveTypeNameEng;
+            
+            // Filter out annual leave if employee is not eligible (< 3 months)
+            if (!eligibleForAnnualLeave && isAnnualLeave(leaveTypeName, leaveTypeNameEng)) {
+                return; // Skip this record
+            }
+            
             leaveRecords.push({
                 id: doc.id,
                 uid: leaveData.uid || doc.id,
                 employeeId: leaveData.employeeId,
                 leaveType: leaveData.leaveType,
-                leaveTypeName: leaveData.leaveTypeName,
-                leaveTypeNameEng: leaveData.leaveTypeNameEng,
+                leaveTypeName: leaveTypeName,
+                leaveTypeNameEng: leaveTypeNameEng,
                
                 requestType: leaveData.requestType || 'daily',
                 isHalfDay: leaveData.isHalfDay || false,
@@ -514,8 +528,9 @@ const getEmployeeLeaveList = async (req, res) => {
             message: "Employee leave records retrieved successfully",
             count: leaveRecords.length,
             data: leaveRecords,
-            eligible: true,
-            monthsWithCompany: monthsDiff
+            eligibleForAnnualLeave: eligibleForAnnualLeave,
+            monthsWithCompany: monthsDiff,
+            requiredMonths: 3
         });
 
     } catch (error) {
@@ -602,6 +617,32 @@ const createLeaveRequest = async (req, res) => {
                 firstName = firstName || doc.firstName || '';
                 lastName = lastName || doc.lastName || '';
                 positionName = positionName || doc.positionName || '';
+            }
+        }
+        
+        // Check if employee is eligible for annual leave (3+ months)
+        const employeeDoc = await loadEmployeeDoc();
+        if (employeeDoc && employeeDoc.joinDate) {
+            const joinDate = new Date(employeeDoc.joinDate);
+            const today = new Date();
+            let monthsWithCompany = (today.getFullYear() - joinDate.getFullYear()) * 12 + 
+                                      (today.getMonth() - joinDate.getMonth());
+            
+            // If current day is before join day, subtract 1 month (not a full month yet)
+            if (today.getDate() < joinDate.getDate()) {
+                monthsWithCompany -= 1;
+            }
+            
+            // Check if this is an annual leave request and employee is not eligible
+            if (isAnnualLeave(leaveTypeName, leaveTypeNameEng) && monthsWithCompany < 3) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Employee must be with company for 3+ months to request annual leave. Current: ${monthsWithCompany} months`,
+                    messageTh: `พนักงานต้องทำงานกับบริษัทอย่างน้อย 3 เดือนเพื่อขอลาปี ปัจจุบัน: ${monthsWithCompany} เดือน`,
+                    eligibleForAnnualLeave: false,
+                    monthsWithCompany: monthsWithCompany,
+                    requiredMonths: 3
+                });
             }
         }
        
@@ -2106,7 +2147,7 @@ const getEmployeeLeaveBalance = async (req, res) => {
             hoursPerDay = 9; // Others: 9 hours = 1 day
         }
         
-        // Check eligibility (3+ months with company)
+        // Check eligibility for annual leave (3+ months with company)
         const joinDate = new Date(employeeData.joinDate);
         const today = new Date();
         let monthsWithCompany = (today.getFullYear() - joinDate.getFullYear()) * 12 + 
@@ -2117,16 +2158,7 @@ const getEmployeeLeaveBalance = async (req, res) => {
             monthsWithCompany -= 1;
         }
         
-        if (monthsWithCompany < 3) {
-            return res.json({
-                success: true,
-                message: "Employee must be with company for 3+ months to have leave balance",
-                eligible: false,
-                monthsWithCompany: monthsWithCompany,
-                requiredMonths: 3,
-                balances: []
-            });
-        }
+        const eligibleForAnnualLeave = monthsWithCompany >= 3;
 
         // Determine year to filter (default: current year)
         const filterYear = year ? parseInt(year) : new Date().getFullYear();
@@ -2141,7 +2173,9 @@ const getEmployeeLeaveBalance = async (req, res) => {
             return res.json({
                 success: true,
                 message: "No leave types configured",
-                eligible: true,
+                eligibleForAnnualLeave: eligibleForAnnualLeave,
+                monthsWithCompany: monthsWithCompany,
+                requiredMonths: 3,
                 balances: []
             });
         }
@@ -2150,13 +2184,20 @@ const getEmployeeLeaveBalance = async (req, res) => {
         const leaveTypes = [];
         settingsSnapshot.forEach(doc => {
             const setting = doc.data();
+            const leaveTypeName = setting.leaveTypeName;
+            const leaveTypeNameEng = setting.leaveTypeNameEng;
             
             // Filter by gender if applicable
             if (!setting.gender || setting.gender === "All" || setting.gender === employeeGender) {
+                // Filter out annual leave if employee is not eligible (< 3 months)
+                if (!eligibleForAnnualLeave && isAnnualLeave(leaveTypeName, leaveTypeNameEng)) {
+                    return; // Skip this leave type
+                }
+                
                 leaveTypes.push({
                     leaveTypeId: doc.id,
-                    leaveTypeName: setting.leaveTypeName,
-                    leaveTypeEng: setting.leaveTypeNameEng,
+                    leaveTypeName: leaveTypeName,
+                    leaveTypeEng: leaveTypeNameEng,
                     maxDays: setting.leaveDay || 0,
                     isPaid: setting.type === 'Paid' || setting.isPaid === true,
                     isActive: setting.isActive !== false
@@ -2244,8 +2285,9 @@ const getEmployeeLeaveBalance = async (req, res) => {
             employeeId: employeeId,
             employeeName: `${employeeData.firstName} ${employeeData.lastName}`,
             year: filterYear,
-            eligible: true,
+            eligibleForAnnualLeave: eligibleForAnnualLeave,
             monthsWithCompany: monthsWithCompany,
+            requiredMonths: 3,
             hoursPerDay: hoursPerDay, // For reference: hours = 1 day for this position
             balances: balances,
             summary: {
