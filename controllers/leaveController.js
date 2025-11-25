@@ -621,9 +621,9 @@ const createLeaveRequest = async (req, res) => {
         }
         
         // Check if employee is eligible for annual leave (3+ months)
-        const employeeDoc = await loadEmployeeDoc();
-        if (employeeDoc && employeeDoc.joinDate) {
-            const joinDate = new Date(employeeDoc.joinDate);
+        const employeeDocForEligibility = await loadEmployeeDoc();
+        if (employeeDocForEligibility && employeeDocForEligibility.joinDate) {
+            const joinDate = new Date(employeeDocForEligibility.joinDate);
             const today = new Date();
             let monthsWithCompany = (today.getFullYear() - joinDate.getFullYear()) * 12 + 
                                       (today.getMonth() - joinDate.getMonth());
