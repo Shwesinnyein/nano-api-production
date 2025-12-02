@@ -2121,54 +2121,216 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
             }
         }
         
-        const message = {
-            tokens: sanitizedTokens,
-            notification: {
-                title: title,  // Works for both iOS and Android
-                body: body     // Works for both iOS and Android
-            },
-            data: stringifiedData, // ✅ All values are now strings
-            // Android config (only affects Android devices)
-            android: {
-                priority: 'high',
-                notification: {
-                    sound: 'default',
-                    channelId: 'nano_hr_foreground'
-                }
-            },
-            // iOS config - APNs payload structure
-            // iOS REQUIRES alert in apns.payload.aps for proper notification display
-            apns: {
-                headers: {
-                    'apns-priority': '10',          // 10 = alert (visible), 5 = background (silent)
-                    'apns-push-type': 'alert'       // Required for iOS 13+
-                    // apns-topic: Automatically set by Firebase Admin SDK
-                },
-                payload: {
-                    aps: {
-                        alert: {
-                            title: title,           // Required for iOS notification display
-                            body: body              // Required for iOS notification display
-                        },
-                        sound: 'default',
-                        badge: badgeCount           // ✅ Use actual unread count
+        // ✅ Add title/body to data payload for Android background reliability
+        stringifiedData.notification_title = String(title);
+        stringifiedData.notification_body = String(body);
+        
+        // ✅ Separate tokens by platform - use database device info if available, fallback to token pattern
+        const androidTokens = [];
+        const iosTokens = [];
+        
+        // Try to get platform info from database if recipientId is provided
+        let tokenPlatformMap = {};
+        if (recipientId) {
+            try {
+                const empRef = await findEmployeeDocRef(recipientId);
+                if (empRef) {
+                    const empDoc = await empRef.get();
+                    if (empDoc.exists) {
+                        const empData = empDoc.data();
+                        const devices = Array.isArray(empData.devices) ? empData.devices : [];
+                        
+                        // Build token -> platform map from devices array
+                        devices.forEach(device => {
+                            if (device && device.token && device.platform) {
+                                tokenPlatformMap[device.token] = device.platform.toLowerCase();
+                            }
+                        });
+                        
+                        console.log(`[FCM] Found platform info for ${Object.keys(tokenPlatformMap).length} token(s) from database`);
                     }
                 }
+            } catch (platformLookupError) {
+                console.warn(`[FCM] ⚠️ Could not lookup platform from database: ${platformLookupError.message}`);
             }
-        };
-        // Send using Firebase Admin SDK (v13+)
-        let response;
-        try {
-            response = await admin.messaging().sendEachForMulticast(message);
+        }
+        
+        // Separate tokens by platform
+        sanitizedTokens.forEach(token => {
+            const platform = tokenPlatformMap[token];
             
+            if (platform === 'android') {
+                androidTokens.push(token);
+            } else if (platform === 'ios') {
+                iosTokens.push(token);
+            } else {
+                // Fallback to token pattern detection
+                if (token.includes(':APA')) {
+                    androidTokens.push(token);
+                } else {
+                    // Assume iOS if no pattern match
+                    iosTokens.push(token);
+                }
+            }
+        });
+        
+        console.log(`[FCM] Platform detection: ${androidTokens.length} Android, ${iosTokens.length} iOS`);
+        
+        const responses = [];
+        
+        // ✅ Send data-only payload for Android (reliable background delivery)
+        if (androidTokens.length > 0) {
+            const androidMessage = {
+                tokens: androidTokens,
+                data: stringifiedData, // Data-only for Android background reliability
+                android: {
+                    priority: 'high'
+                    // No notification block - app handles display from data payload
+                }
+            };
+            
+            try {
+                const androidResponse = await admin.messaging().sendEachForMulticast(androidMessage);
+                console.log(`[FCM] Android (data-only): ✅ ${androidResponse.successCount} sent, ❌ ${androidResponse.failureCount} failed`);
+                responses.push(...androidResponse.responses.map((resp, idx) => ({
+                    token: androidTokens[idx],
+                    success: resp.success,
+                    error: resp.error,
+                    platform: 'android'
+                })));
+            } catch (androidError) {
+                console.error('[FCM] Android send error:', androidError);
+                androidTokens.forEach(token => {
+                    responses.push({
+                        token: token,
+                        success: false,
+                        error: { code: 'unknown', message: androidError.message },
+                        platform: 'android'
+                    });
+                });
+            }
+        }
+        
+        // ✅ Send notification + data payload for iOS (works reliably)
+        if (iosTokens.length > 0) {
+            const iosMessage = {
+                tokens: iosTokens,
+                notification: {
+                    title: title,
+                    body: body
+                },
+                data: stringifiedData,
+                apns: {
+                    headers: {
+                        'apns-priority': '10',
+                        'apns-push-type': 'alert'
+                    },
+                    payload: {
+                        aps: {
+                            alert: {
+                                title: title,
+                                body: body
+                            },
+                            sound: 'default',
+                            badge: badgeCount,
+                            contentAvailable: true
+                        }
+                    }
+                }
+            };
+            
+            try {
+                const iosResponse = await admin.messaging().sendEachForMulticast(iosMessage);
+                console.log(`[FCM] iOS (notification+data): ✅ ${iosResponse.successCount} sent, ❌ ${iosResponse.failureCount} failed`);
+                responses.push(...iosResponse.responses.map((resp, idx) => ({
+                    token: iosTokens[idx],
+                    success: resp.success,
+                    error: resp.error,
+                    platform: 'ios'
+                })));
+            } catch (iosError) {
+                console.error('[FCM] iOS send error:', iosError);
+                iosTokens.forEach(token => {
+                    responses.push({
+                        token: token,
+                        success: false,
+                        error: { code: 'unknown', message: iosError.message },
+                        platform: 'ios'
+                    });
+                });
+            }
+        }
+        
+        // ✅ If platform detection failed, send mixed payload as fallback
+        if (androidTokens.length === 0 && iosTokens.length === 0 && sanitizedTokens.length > 0) {
+            console.warn('[FCM] ⚠️ Platform detection failed, sending mixed payload as fallback');
+            const fallbackMessage = {
+                tokens: sanitizedTokens,
+                notification: {
+                    title: title,
+                    body: body
+                },
+                data: stringifiedData,
+                android: {
+                    priority: 'high',
+                    notification: {
+                        sound: 'default',
+                        channelId: 'nano_hr_foreground'
+                    }
+                },
+                apns: {
+                    headers: {
+                        'apns-priority': '10',
+                        'apns-push-type': 'alert'
+                    },
+                    payload: {
+                        aps: {
+                            alert: {
+                                title: title,
+                                body: body
+                            },
+                            sound: 'default',
+                            badge: badgeCount,
+                            contentAvailable: true
+                        }
+                    }
+                }
+            };
+            
+            try {
+                const fallbackResponse = await admin.messaging().sendEachForMulticast(fallbackMessage);
+                console.log(`[FCM] Fallback (mixed): ✅ ${fallbackResponse.successCount} sent, ❌ ${fallbackResponse.failureCount} failed`);
+                responses.push(...fallbackResponse.responses.map((resp, idx) => ({
+                    token: sanitizedTokens[idx],
+                    success: resp.success,
+                    error: resp.error,
+                    platform: 'unknown'
+                })));
+            } catch (fallbackError) {
+                console.error('[FCM] Fallback send error:', fallbackError);
+            }
+        }
+        
+        // Calculate totals
+        const successCount = responses.filter(r => r.success).length;
+        const failureCount = responses.filter(r => !r.success).length;
+        
+        let response = {
+            successCount: successCount,
+            failureCount: failureCount,
+            responses: responses
+        };
+        
+        // Process invalid tokens
+        try {
             if (response.failureCount > 0) {
                 const invalidTokens = [];
-                response.responses.forEach((resp, idx) => {
+                response.responses.forEach((resp) => {
                     if (!resp.success) {
-                        const token = sanitizedTokens[idx];
+                        const token = resp.token;
                         const errorCode = resp.error?.code || 'unknown';
                         const errorMessage = resp.error?.message || 'unknown';
-                        console.error(`[FCM] ❌ Failed token ${token ? token.substring(0, 30) + '...' : 'unknown'}: ${errorCode} - ${errorMessage}`);
+                        console.error(`[FCM] ❌ Failed token ${token ? token.substring(0, 30) + '...' : 'unknown'} (${resp.platform || 'unknown'}): ${errorCode} - ${errorMessage}`);
                         
                         // Track invalid tokens for cleanup
                         // ✅ Only remove tokens for DEFINITIVE errors (actually invalid)
@@ -2205,27 +2367,15 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
                 console.log(`[FCM] ✅ Sent to ${response.successCount} device(s) | ❌ ${response.failureCount} failed`);
                 
                 // Log token details for debugging
-                response.responses.forEach((resp, idx) => {
-                    if (resp.success && sanitizedTokens[idx]) {
-                        const token = sanitizedTokens[idx];
-                        console.log(`[FCM] Token ${idx + 1}: ${token.substring(0, 30)}... (${token.length} chars)`);
-                        // Check token format - iOS FCM tokens are typically 163 chars, Android are 152+
-                        const isLikelyIOS = token.length > 150 && !token.includes(':APA');
-                        const isLikelyAndroid = token.includes(':APA91') || token.includes(':APA91b');
-                        console.log(`[FCM] Token format: ${isLikelyIOS ? 'iOS' : isLikelyAndroid ? 'Android' : 'Unknown'}`);
+                response.responses.forEach((resp) => {
+                    if (resp.success && resp.token) {
+                        const token = resp.token;
+                        console.log(`[FCM] Token: ${token.substring(0, 30)}... (${token.length} chars, ${resp.platform || 'unknown'})`);
                     }
                 });
                 
-                // Log payload being sent
-                console.log(`[FCM] Payload sent:`, JSON.stringify({
-                    notification: { title: title, body: body },
-                    data: stringifiedData, // ✅ Log data block to verify it's included
-                    android: message.android,
-                    apns: {
-                        headers: message.apns?.headers,
-                        payload: message.apns?.payload
-                    }
-                }, null, 2));
+                // Log payload summary
+                console.log(`[FCM] Payload summary: Android (data-only): ${androidTokens.length}, iOS (notification+data): ${iosTokens.length}`);
             } else {
                 console.error(`[FCM] ❌ All ${response.failureCount} notification(s) failed`);
             }
@@ -2247,8 +2397,9 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
                 : 'All push notifications failed',
             successCount: response.successCount,
             failureCount: response.failureCount,
-            responses: response.responses.map((resp, idx) => ({
-                token: sanitizedTokens[idx] ? `${sanitizedTokens[idx].substring(0, 20)}...` : 'unknown',
+            responses: response.responses.map((resp) => ({
+                token: resp.token ? `${resp.token.substring(0, 20)}...` : 'unknown',
+                platform: resp.platform || 'unknown',
                 success: resp.success,
                 error: resp.error ? {
                     code: resp.error.code,
