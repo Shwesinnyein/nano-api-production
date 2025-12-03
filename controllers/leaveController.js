@@ -2201,7 +2201,8 @@ const getEmployeeLeaveBalance = async (req, res) => {
                     leaveTypeEng: leaveTypeNameEng,
                     maxDays: setting.leaveDay || 0,
                     isPaid: setting.type === 'Paid' || setting.isPaid === true,
-                    isActive: setting.isActive !== false
+                    isActive: setting.isActive !== false,
+                    description: setting.description || '-'
                 });
             }
         });
