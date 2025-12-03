@@ -27,12 +27,17 @@ const upload = multer({
 
 // Middleware to conditionally use multer only for multipart/form-data
 const conditionalUpload = (req, res, next) => {
-    const contentType = req.headers['content-type'] || '';
+    const contentType = (req.headers['content-type'] || '').toLowerCase();
+    
+    // Only use multer if explicitly multipart/form-data
+    // This allows express.json() to parse JSON requests with Firebase Storage URLs
     if (contentType.includes('multipart/form-data')) {
-        // Use multer for file uploads
+        // Use multer for file uploads (multipart/form-data)
         return upload.array('attachments', 5)(req, res, next);
     } else {
-        // Skip multer for JSON requests (attachments will be URLs in body)
+        // Skip multer for JSON requests (application/json)
+        // Attachments will be Firebase Storage URLs in the JSON body
+        // express.json() middleware will parse the body correctly
         next();
     }
 };
