@@ -658,8 +658,25 @@ const createLeaveRequest = async (req, res) => {
         if (!date) date = req.body.date || req.body.fromDate || date;
 
         // Normalize attachments array into legacy attachment field
-        if (!attachment && Array.isArray(attachments) && attachments.length > 0) {
-            attachment = attachments;
+        // Handle both single attachment (string) and multiple attachments (array)
+        if (!attachment && attachments) {
+            if (Array.isArray(attachments) && attachments.length > 0) {
+                attachment = attachments;
+            } else if (typeof attachments === 'string' && attachments.length > 0) {
+                attachment = [attachments];
+            }
+        }
+        
+        // Log attachment info for debugging
+        if (attachment || attachments) {
+            console.log('📎 Attachments received:', {
+                hasAttachment: !!attachment,
+                hasAttachments: !!attachments,
+                attachmentType: attachment ? (Array.isArray(attachment) ? 'array' : typeof attachment) : 'none',
+                attachmentsType: attachments ? (Array.isArray(attachments) ? 'array' : typeof attachments) : 'none',
+                isMultipart: !!(req.files && req.files.length > 0),
+                contentType: req.headers['content-type']
+            });
         }
 
         if (!['daily', 'hourly'].includes(requestType)) {
@@ -879,9 +896,10 @@ const createLeaveRequest = async (req, res) => {
         // Generate unique leave request ID and UUID v4
         const leaveRequestId = uuidv4();
 
-        // Handle file uploads
+        // Handle file uploads and attachments
         let attachmentData = null;
         if (req.files && req.files.length > 0) {
+            // Handle multipart file uploads (files sent as form data)
             try {
                 const uploadedFiles = [];
                 for (const file of req.files) {
@@ -902,8 +920,33 @@ const createLeaveRequest = async (req, res) => {
                 });
             }
         } else if (attachment) {
-            // Handle text-based attachment (legacy support)
-            attachmentData = attachment;
+            // Handle attachments as Firebase Storage URLs (from JSON body)
+            if (Array.isArray(attachment)) {
+                // Array of URLs
+                attachmentData = {
+                    files: attachment.map(url => ({
+                        url: url,
+                        name: url.split('/').pop() || 'attachment',
+                        uploadedAt: new Date().toISOString()
+                    })),
+                    count: attachment.length,
+                    uploadedAt: new Date().toISOString()
+                };
+            } else if (typeof attachment === 'string') {
+                // Single URL string
+                attachmentData = {
+                    files: [{
+                        url: attachment,
+                        name: attachment.split('/').pop() || 'attachment',
+                        uploadedAt: new Date().toISOString()
+                    }],
+                    count: 1,
+                    uploadedAt: new Date().toISOString()
+                };
+            } else {
+                // Legacy format (object or other)
+                attachmentData = attachment;
+            }
         }
 
         // Get employee data ONCE (reuse for company/location/branch AND role)

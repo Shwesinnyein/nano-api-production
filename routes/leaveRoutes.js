@@ -25,13 +25,25 @@ const upload = multer({
     }
 });
 
+// Middleware to conditionally use multer only for multipart/form-data
+const conditionalUpload = (req, res, next) => {
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('multipart/form-data')) {
+        // Use multer for file uploads
+        return upload.array('attachments', 5)(req, res, next);
+    } else {
+        // Skip multer for JSON requests (attachments will be URLs in body)
+        next();
+    }
+};
+
 // Leave routes
 router.get("/settings", leaveController.getLeaveSettings);
 router.get("/employee/:uid", leaveController.getEmployeeLeaveList);
 router.get("/balance/:employeeId", leaveController.getEmployeeLeaveBalance); // Get leave balance
 router.get("/list", leaveController.getLeaveListByRole); // Get leave list with role-based filtering
 router.get("/history", leaveController.getLeaveHistory); // NEW: Get leave history with strict status filtering
-router.post("/create", upload.array('attachments', 5), leaveController.createLeaveRequest);
+router.post("/create", conditionalUpload, leaveController.createLeaveRequest);
 router.get("/all", leaveController.getAllLeaveRequests);
 router.get("/:leaveId", leaveController.getLeaveRequestById);
 router.put("/:leaveId/status", leaveController.updateLeaveRequestStatus);
