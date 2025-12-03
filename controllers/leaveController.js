@@ -348,6 +348,7 @@ const getLeaveSettings = async (req, res) => {
                 maxDays: leaveSettingData.leaveDay,
                 isPaid: leaveSettingData.type === 'Paid' || leaveSettingData.isPaid === true,
                 gender: leaveSettingData.gender,
+               
                 description: leaveSettingData.description,
                 isActive: leaveSettingData.isActive !== false,
                 createdAt: leaveSettingData.createdDate,
@@ -2273,6 +2274,7 @@ const getEmployeeLeaveBalance = async (req, res) => {
                 remaining: remainingDays,
                 remainingHours: remainingHours,
                 remainingDaysHours: remainingDaysHours,
+                description: leaveType.description,
                 isPaid: leaveType.isPaid,
                 isActive: leaveType.isActive,
                 percentageUsed: leaveType.maxDays > 0 ? Math.round((used / leaveType.maxDays) * 100) : 0
