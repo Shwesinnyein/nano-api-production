@@ -46,7 +46,7 @@ const { admin, db } = require("../config/firebaseConfig");
 // Get all employees (simple query without optimization for now)
 const getEmployeeListInternal = async () => {
     try {
-        const employeesRef = db.collection("employees");
+        const employeesRef = db.collection("employees").where("status", "==", "active");
         const snapshot = await employeesRef.get();
 
         if (snapshot.empty) {
