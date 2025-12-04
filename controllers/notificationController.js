@@ -2165,10 +2165,16 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
                 iosTokens.push(token);
             } else {
                 // Fallback to token pattern detection
-                if (token.includes(':APA')) {
+                // Android FCM tokens typically contain ':APA' or are longer (140+ chars)
+                // iOS tokens are typically shorter and don't contain ':APA'
+                const trimmedToken = typeof token === 'string' ? token.trim() : String(token);
+                if (trimmedToken.includes(':APA') || trimmedToken.length > 140) {
+                    // Likely Android token
+                    console.log(`[FCM] Token pattern suggests Android: ${trimmedToken.substring(0, 30)}...`);
                     androidTokens.push(token);
                 } else {
-                    // Assume iOS if no pattern match
+                    // Likely iOS token (shorter, no :APA pattern)
+                    console.log(`[FCM] Token pattern suggests iOS: ${trimmedToken.substring(0, 30)}...`);
                     iosTokens.push(token);
                 }
             }
@@ -2654,19 +2660,59 @@ const sendLeaveStatusNotification = async (req, res) => {
             try {
                 switch (channel) {
                     case NOTIFICATION_CHANNELS.PUSH:
-        const deviceTokens = employeeData.deviceTokens || [];
-                        if (deviceTokens.length > 0) {
-                            const pushResult = await sendPushNotification(deviceTokens, title, message, {
-                                type: status === 'approved' ? 'leave_approved' : 'leave_rejected',
+                        // Get device tokens from employee data (check both deviceTokens and devices array)
+                        let deviceTokens = employeeData.deviceTokens || [];
+                        console.log('📨 [APPROVAL/REJECTION] deviceTokens from employeeData.deviceTokens:', deviceTokens.length);
+                        
+                        // If deviceTokens is empty, try extracting from devices array
+                        if ((!deviceTokens || deviceTokens.length === 0) && Array.isArray(employeeData.devices)) {
+                            console.log('📨 [APPROVAL/REJECTION] employeeData.devices:', employeeData.devices.length, 'devices');
+                            deviceTokens = employeeData.devices
+                                .map(device => device && device.token)
+                                .filter(token => token && typeof token === 'string' && token.trim().length > 0);
+                            console.log('📨 [APPROVAL/REJECTION] deviceTokens extracted from devices array:', deviceTokens.length);
+                        }
+                        
+                        // Clean and deduplicate tokens
+                        if (deviceTokens && deviceTokens.length > 0) {
+                            const uniqueTokens = Array.from(new Set(
+                                deviceTokens
+                                    .map(token => typeof token === 'string' ? token.trim() : token)
+                                    .filter(token => token && token.length > 0)
+                            ));
+                            
+                            console.log('📨 [APPROVAL/REJECTION] Sending push notification to requester:');
+                            console.log('   - Employee ID:', employeeId);
+                            console.log('   - Status:', status);
+                            console.log('   - Unique tokens:', uniqueTokens.length);
+                            console.log('   - Title:', title);
+                            console.log('   - Message:', message);
+                            
+                            // Ensure title and message are in data payload for Android background handling
+                            const pushResult = await sendPushNotification(uniqueTokens, title, message, {
+                                type: status === 'approved' || status.includes('approved') ? 'leave_approved' : 'leave_rejected',
                                 employeeId: employeeId,
                                 leaveRequestId: leaveRequestId,
                                 leaveType: leaveType,
                                 leaveTypeNameEng: leaveTypeNameEng,
                                 employeeName: employeeName,
-                                positionName: positionName
-                            }, employeeId);  // ✅ Pass recipientId for badge count
+                                positionName: positionName,
+                                status: status,
+                                statusName: statusName,
+                                // Explicitly include title/body in data (sendPushNotification adds these, but being explicit)
+                                notification_title: title,
+                                notification_body: message
+                            }, employeeId);  // ✅ Pass recipientId for badge count and platform detection
+                            
+                            console.log('📨 [APPROVAL/REJECTION] Push notification result:', {
+                                success: pushResult.success,
+                                successCount: pushResult.successCount,
+                                failureCount: pushResult.failureCount
+                            });
+                            
                             results.push({ channel: 'push', ...pushResult });
                         } else {
+                            console.warn(`⚠️ [APPROVAL/REJECTION] No device tokens found for requester ${employeeId}`);
                             results.push({ channel: 'push', success: false, message: 'No device tokens found' });
                         }
                         break;

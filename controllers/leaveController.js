@@ -1401,10 +1401,14 @@ const updateLeaveRequestStatus = async (req, res) => {
         await leaveRequestRef.update(updateData);
 
 
-        // Send notification to employee about status change (async, don't wait for it)
+        // ✅ CRITICAL FIX: Send notification to employee BEFORE response
+        // On Vercel serverless, functions terminate after response, killing background work
+        // Sending notifications first ensures they complete before function ends
         try {
             const employeeStatusForChannel = updateData.status || status;
-            sendLeaveStatusNotification({
+            console.log(`📨 [UPDATE STATUS] Starting notification to requester ${leaveData.employeeId}...`);
+            
+            await sendLeaveStatusNotification({
                 body: {
                     employeeId: leaveData.employeeId,
                     leaveRequestId: leaveId,
@@ -1422,13 +1426,17 @@ const updateLeaveRequestStatus = async (req, res) => {
                 }
             }, {
                 json: () => {}
-            }).catch(notifError => {
-                console.error(`❌ Failed to send ${status} notification to employee:`, notifError);
             });
+            
+            console.log(`✅ [UPDATE STATUS] Notification sent to requester ${leaveData.employeeId}`);
+        } catch (notifError) {
+            console.error(`❌ Failed to send ${status} notification to employee:`, notifError);
+            // Don't fail the request if notifications fail
+        }
 
-            // If approved by manager, also notify HR
-            if (updateData.status === 'approved_manager') {
-                
+        // If approved by manager, also notify HR
+        if (updateData.status === 'approved_manager') {
+            try {
                 // Get approver data to check if they are a manager
                 const employeesRef = db.collection("employees");
                 const approverQuery = await employeesRef.where("uid", "==", approvedBy).get();
@@ -1469,15 +1477,12 @@ const updateLeaveRequestStatus = async (req, res) => {
                                     console.error(`❌ Failed to send HR notification:`, hrNotifError);
                                 });
                             });
-                        } else {
                         }
-                    } else {
                     }
-                } else {
                 }
+            } catch (hrNotifError) {
+                console.error("❌ Error sending HR notifications:", hrNotifError);
             }
-        } catch (notifError) {
-            console.error("❌ Error sending notifications:", notifError);
         }
 
         res.json({
@@ -1900,10 +1905,13 @@ const approveLeaveRequest = async (req, res) => {
         };
 
 
-        // Send notification to employee about status change (async, don't wait for it)
+        // ✅ CRITICAL FIX: Send notification to employee BEFORE response
+        // On Vercel serverless, functions terminate after response, killing background work
+        // Sending notifications first ensures they complete before function ends
         try {
+            console.log(`📨 [APPROVAL/REJECTION] Starting notification to requester ${leaveData.employeeId}...`);
             
-            sendLeaveStatusNotification({
+            await sendLeaveStatusNotification({
                 body: {
                     employeeId: leaveData.employeeId,
                     leaveRequestId: leaveId,
@@ -1922,12 +1930,17 @@ const approveLeaveRequest = async (req, res) => {
                 }
             }, {
                 json: () => {}
-            }).catch(notifError => {
-                console.error(`❌ Failed to send ${action} notification to employee:`, notifError);
             });
+            
+            console.log(`✅ [APPROVAL/REJECTION] Notification sent to requester ${leaveData.employeeId}`);
+        } catch (notifError) {
+            console.error(`❌ Failed to send ${action} notification to employee:`, notifError);
+            // Don't fail the request if notifications fail
+        }
 
-            // If approved by team lead, also notify HR
-            if (action === 'approve' && userApprovalLevel === 'team-lead') {
+        // If approved by team lead, also notify HR
+        if (action === 'approve' && userApprovalLevel === 'team-lead') {
+            try {
                 
                 // Get approver data for notification
                 const employeesRef = db.collection("employees");
@@ -1989,12 +2002,15 @@ const approveLeaveRequest = async (req, res) => {
                             console.error(`❌ Failed to send HR push notification:`, notifError);
                         });
                     });
-                } else {
                 }
+            } catch (hrNotifError) {
+                console.error("❌ Error sending HR notifications (team lead):", hrNotifError);
             }
+        }
 
-            // If approved by manager, also notify HR
-            if (action === 'approve' && userApprovalLevel === 'manager') {
+        // If approved by manager, also notify HR
+        if (action === 'approve' && userApprovalLevel === 'manager') {
+            try {
                 
                 // Get approver data for notification
                 const employeesRef = db.collection("employees");
@@ -2059,14 +2075,10 @@ const approveLeaveRequest = async (req, res) => {
                             console.error(`❌ Failed to send HR push notification:`, notifError);
                         });
                     });
-                } else {
                 }
+            } catch (hrNotifError) {
+                console.error("❌ Error sending HR notifications (manager):", hrNotifError);
             }
-            
-            // ✅ REMOVED: Old HR approval notification code (duplicate)
-            // The new code path below (lines 2004+) handles all next approver notifications generically
-        } catch (notifError) {
-            console.error("❌ Error sending notifications:", notifError);
         }
 
         // NEW: Send notification to specific next approver(s) based on nextApprover level
