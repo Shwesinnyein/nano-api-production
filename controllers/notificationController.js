@@ -2566,6 +2566,7 @@ const sendLeaveStatusNotification = async (req, res) => {
             status, // 'approved' or 'rejected'
             approvedBy,
             reason,
+            rejectReason, // Rejection reason from Flutter
             leaveType,
             leaveTypeNameEng,
             fromDate,
@@ -2699,6 +2700,7 @@ const sendLeaveStatusNotification = async (req, res) => {
                                 positionName: positionName,
                                 status: status,
                                 statusName: statusName,
+                                rejectReason: rejectReason || '', // Include rejection reason in push notification
                                 // Explicitly include title/body in data (sendPushNotification adds these, but being explicit)
                                 notification_title: title,
                                 notification_body: message
@@ -2731,7 +2733,7 @@ const sendLeaveStatusNotification = async (req, res) => {
                                 employeeId,
                                 leaveRequestId, 
                                 status, 
-                                reason,
+                                rejectReason: rejectReason ||  '',
                                 leaveType,
                                 leaveTypeNameEng,
                                 fromDate,
