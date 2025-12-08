@@ -163,6 +163,13 @@ const buildApproverNotificationContent = (level, { employeeName, leaveTypeName, 
                 message: `${safeEmployeeName} submitted a ${leaveLabel} request ${rangeText} . Please check it out.`,
                 messageTh: `${safeEmployeeName} ส่งคำขอ ${leaveLabel} ${rangeText}. กรุณาตรวจสอบ.`
             };
+        case 'warehouse-manager':
+            return {
+                title: `Leave Request Notification`,
+                titleTh: `การแจ้งเตือนการขอลา`,
+                message: `${safeEmployeeName} submitted a ${leaveLabel} request ${rangeText}. Please check it out.`,
+                messageTh: `${safeEmployeeName} ส่งคำขอ ${leaveLabel} ${rangeText}. กรุณาตรวจสอบ.`
+            };
         default:
             return {
                 title: `Leave Request Notification`,
@@ -257,6 +264,17 @@ const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
             approverQuery.forEach(doc => {
                 const approverData = doc.data();
                 ids.push(approverData.uid);
+            });
+            break;
+        }
+        case 'warehouse-manager': {
+            console.log('📨 findApproverIdsByLevel: 6', level, employeeId);
+            const warehouseManagerQuery = await employeesRef
+                .where("positionName", "==", "Warehouse Manager")
+                .get();
+            warehouseManagerQuery.forEach(doc => {
+                const warehouseManagerData = doc.data();
+                ids.push(warehouseManagerData.uid);
             });
             break;
         }
@@ -1000,6 +1018,10 @@ const createLeaveRequest = async (req, res) => {
             
             firstApprover = "hr";
             console.log(`✅ Manager → HR`);
+        } else if (positionName === "Warehouse Manager") {
+            // Warehouse Manager requests leave → Go to HR directly (similar to Manager)
+            firstApprover = "hr";
+            console.log(`✅ Warehouse Manager → HR`);
         } else if (positionName === "HR") {
             // HR requests leave → Skip both manager and HR, go to final approver
             firstApprover = "approver";
@@ -1016,6 +1038,10 @@ const createLeaveRequest = async (req, res) => {
             // Salesman → Go through manager approval
             firstApprover = "manager";
             console.log(`✅ Salesman → Manager`);
+        } else if (positionName === "Warehouse Worker" || positionName === "Warehouse Administrator") {
+            // Warehouse Worker/Administrator → Go to Warehouse Manager first
+            firstApprover = "warehouse-manager";
+            console.log(`✅ ${positionName} → Warehouse Manager`);
         } else {
             // Other positions → Skip manager, go to HR directly
             firstApprover = "hr";
@@ -1799,6 +1825,9 @@ const approveLeaveRequest = async (req, res) => {
         } else if (leaveData.currentApprover === "manager" && actualPositionName === "Manager") {
             canApprove = true;
             userApprovalLevel = "manager";
+        } else if (leaveData.currentApprover === "warehouse-manager" && actualPositionName === "Warehouse Manager") {
+            canApprove = true;
+            userApprovalLevel = "warehouse-manager";
         } else if (leaveData.currentApprover === "hr" && actualPositionName === "HR") {
             canApprove = true;
             userApprovalLevel = "hr";
@@ -1827,6 +1856,11 @@ const approveLeaveRequest = async (req, res) => {
                 case "manager":
                     nextApprover = "hr";
                     newStatus = "approved_manager";
+                    break;
+                case "warehouse-manager":
+                    // Warehouse Manager approval → Go to HR next
+                    nextApprover = "hr";
+                    newStatus = "approved_warehouse_manager";
                     break;
                 case "hr":
                     nextApprover = "approver";
@@ -1862,6 +1896,8 @@ const approveLeaveRequest = async (req, res) => {
                     return 'Approved by Team Lead';
                 case 'approved_manager':
                     return 'Approved by Manager';
+                case 'approved_warehouse_manager':
+                    return 'Approved by Warehouse Manager';
                 case 'approved_hr':
                     return 'Approved by HR';
                 case 'approved':
@@ -2078,6 +2114,78 @@ const approveLeaveRequest = async (req, res) => {
                 }
             } catch (hrNotifError) {
                 console.error("❌ Error sending HR notifications (manager):", hrNotifError);
+            }
+        }
+
+        // If approved by warehouse-manager, notify HR (HR will then forward to approver)
+        if (action === 'approve' && userApprovalLevel === 'warehouse-manager') {
+            try {
+                // Get warehouse manager data for notification
+                const employeesRef = db.collection("employees");
+                const warehouseManagerQuery = await employeesRef.where("uid", "==", userId).get();
+                
+                let warehouseManagerName = userId;
+                if (!warehouseManagerQuery.empty) {
+                    const warehouseManagerData = warehouseManagerQuery.docs[0].data();
+                    warehouseManagerName = `${warehouseManagerData.firstName} ${warehouseManagerData.lastName}`;
+                }
+                
+                // Notify HR personnel
+                const hrQuery = await employeesRef.where("positionName", "==", "HR").get();
+                
+                if (!hrQuery.empty) {
+                    const hrNotification = buildApproverNotificationContent('hr', notificationBase);
+                    hrQuery.forEach(hrDoc => {
+                        const hrData = hrDoc.data();
+                    
+                        const messageTh = `${warehouseManagerName} อนุมัติคำขอ ${leaveData.leaveTypeName} จากพนักงาน ${leaveData.employeeId}`;
+                        const titleTh = hrNotification.titleTh || `การแจ้งเตือนการขอลา`;
+
+                        // Create HR notification
+                        createInAppNotification(
+                            hrData.uid,
+                            hrNotification.title,
+                            hrNotification.message,
+                            'leave_approved_by_warehouse_manager',
+                            {
+                                leaveRequestId: leaveId,
+                                employeeId: leaveData.employeeId,
+                                warehouseManagerId: userId,
+                                warehouseManagerName: warehouseManagerName,
+                                leaveType: leaveData.leaveTypeName,
+                                fromDate: leaveData.fromDate || leaveData.date,
+                                toDate: leaveData.toDate || leaveData.date,
+                                comment: comment
+                            },
+                            titleTh,
+                            messageTh
+                        ).catch(hrNotifError => {
+                            console.error(`❌ Failed to send HR notification:`, hrNotifError);
+                        });
+
+                        sendLeaveRequestNotification({
+                            body: {
+                                employeeId: leaveData.employeeId,
+                                leaveRequestId: leaveId,
+                                leaveType: leaveData.leaveTypeName,
+                                leaveTypeNameEng: leaveData.leaveTypeNameEng,
+                                fromDate: notificationBase.fromDate,
+                                toDate: notificationBase.toDate,
+                                managerId: hrData.uid,
+                                approverLevel: 'hr',
+                                channels: ['push'],
+                                titleOverride: hrNotification.title,
+                                messageOverride: hrNotification.message
+                            }
+                        }, {
+                            json: () => {}
+                        }).catch(notifError => {
+                            console.error(`❌ Failed to send HR push notification:`, notifError);
+                        });
+                    });
+                }
+            } catch (warehouseManagerNotifError) {
+                console.error("❌ Error sending HR notifications (warehouse-manager):", warehouseManagerNotifError);
             }
         }
 
