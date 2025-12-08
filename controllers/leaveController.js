@@ -1421,7 +1421,7 @@ const updateLeaveRequestStatus = async (req, res) => {
         if (status === 'rejected') {
             updateData.rejectedBy = approvedBy; // Store employee ID of rejecter
             updateData.rejectedDate = new Date().toISOString();
-           // updateData.rejectedReason = rejectedReason;
+            updateData.rejectedReason = rejectedReason || null; // Store rejection reason
         }
 
         await leaveRequestRef.update(updateData);
@@ -1775,7 +1775,7 @@ const approveLeaveRequest = async (req, res) => {
     
     try {
         const { leaveId } = req.params;
-        const { userId, comment, action } = req.body; // action: approve/reject
+        const { userId, comment, action, rejectedReason } = req.body; // action: approve/reject, rejectedReason for rejection reason
         
         if (!leaveId || !userId || !action) {
             return res.status(400).json({ 
@@ -1812,6 +1812,12 @@ const approveLeaveRequest = async (req, res) => {
         const actualUserRole = userData.role; // For approvers
         const actualPositionName = userData.positionName; // For manager, HR, and team lead
         
+        // Debug logging
+        console.log(`🔍 [APPROVAL CHECK] Leave ID: ${leaveId}`);
+        console.log(`🔍 [APPROVAL CHECK] Leave currentApprover: "${leaveData.currentApprover}"`);
+        console.log(`🔍 [APPROVAL CHECK] Leave status: "${leaveData.status}"`);
+        console.log(`🔍 [APPROVAL CHECK] User positionName: "${actualPositionName}"`);
+        console.log(`🔍 [APPROVAL CHECK] User role: "${actualUserRole}"`);
         
         // Check permission based on approval level
         // Team Lead, Manager, HR: Check positionName
@@ -1819,27 +1825,44 @@ const approveLeaveRequest = async (req, res) => {
         let canApprove = false;
         let userApprovalLevel = null;
         
-        if (leaveData.currentApprover === "team-lead" && actualPositionName === "Programmer (Team Lead)") {
+        // Normalize position names for comparison (trim whitespace)
+        const normalizedPositionName = (actualPositionName || "").trim();
+        const normalizedCurrentApprover = (leaveData.currentApprover || "").trim();
+        
+        if (normalizedCurrentApprover === "team-lead" && normalizedPositionName === "Programmer (Team Lead)") {
             canApprove = true;
             userApprovalLevel = "team-lead";
-        } else if (leaveData.currentApprover === "manager" && actualPositionName === "Manager") {
+            console.log(`✅ [APPROVAL CHECK] Team Lead permission granted`);
+        } else if (normalizedCurrentApprover === "manager" && normalizedPositionName === "Manager") {
             canApprove = true;
             userApprovalLevel = "manager";
-        } else if (leaveData.currentApprover === "warehouse-manager" && actualPositionName === "Warehouse Manager") {
+            console.log(`✅ [APPROVAL CHECK] Manager permission granted`);
+        } else if (normalizedCurrentApprover === "warehouse-manager" && normalizedPositionName === "Warehouse Manager") {
             canApprove = true;
             userApprovalLevel = "warehouse-manager";
-        } else if (leaveData.currentApprover === "hr" && actualPositionName === "HR") {
+            console.log(`✅ [APPROVAL CHECK] Warehouse Manager permission granted`);
+        } else if (normalizedCurrentApprover === "hr" && normalizedPositionName === "HR") {
             canApprove = true;
             userApprovalLevel = "hr";
-        } else if (leaveData.currentApprover === "approver" && (actualUserRole === "approver" || actualUserRole === "approver-three")) {
+            console.log(`✅ [APPROVAL CHECK] HR permission granted`);
+        } else if (normalizedCurrentApprover === "approver" && (actualUserRole === "approver" || actualUserRole === "approver-three")) {
             canApprove = true;
             userApprovalLevel = "approver";
+            console.log(`✅ [APPROVAL CHECK] Approver permission granted`);
+        } else {
+            console.log(`❌ [APPROVAL CHECK] Permission denied - currentApprover: "${normalizedCurrentApprover}", positionName: "${normalizedPositionName}", role: "${actualUserRole}"`);
         }
         
         if (!canApprove) {
             return res.status(403).json({ 
                 success: false,
-                message: `You don't have permission to approve at ${leaveData.currentApprover} level. Your position: ${actualPositionName}, role: ${actualUserRole}` 
+                message: `You don't have permission to approve at ${leaveData.currentApprover} level. Your position: ${actualPositionName}, role: ${actualUserRole}`,
+                debug: {
+                    leaveCurrentApprover: leaveData.currentApprover,
+                    leaveStatus: leaveData.status,
+                    userPositionName: actualPositionName,
+                    userRole: actualUserRole
+                }
             });
         }
         
@@ -1888,6 +1911,13 @@ const approveLeaveRequest = async (req, res) => {
             currentApprover: nextApprover,
             updatedAt: new Date().toISOString()
         };
+        
+        // Add rejection fields if rejecting
+        if (action === "reject") {
+            updateData.rejectedBy = userId; // Store employee ID of rejecter
+            updateData.rejectedDate = new Date().toISOString();
+            updateData.rejectedReason = rejectedReason || comment || null; // Store rejection reason (prefer rejectedReason, fallback to comment)
+        }
         
         // Helper function to get proper status display names
         function getStatusDisplayName(status) {
@@ -1953,7 +1983,7 @@ const approveLeaveRequest = async (req, res) => {
                     leaveRequestId: leaveId,
                     status: newStatus,
                     approvedBy: userId,
-                    reason: action === 'reject' ? (comment || leaveData.reason || '') : (comment || ''),
+                    reason: action === 'reject' ? (rejectedReason || comment || leaveData.reason || '') : (comment || ''),
                     leaveType: leaveData.leaveTypeName,
                     leaveTypeNameEng: leaveData.leaveTypeNameEng,
                     fromDate: leaveData.fromDate || leaveData.date,
@@ -2258,7 +2288,12 @@ const approveLeaveRequest = async (req, res) => {
                 status: newStatus,
                 statusName: updateData.statusName,
                 currentApprover: nextApprover,
-                approvalHistory: currentHistory
+                approvalHistory: currentHistory,
+                ...(action === "reject" && {
+                    rejectedBy: updateData.rejectedBy,
+                    rejectedDate: updateData.rejectedDate,
+                    rejectedReason: updateData.rejectedReason
+                })
             }
         });
         
