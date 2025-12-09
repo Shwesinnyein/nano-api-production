@@ -1668,8 +1668,8 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
             query = query.where("status", "==", "pending");
         }
         if(level === "hr"){
-            // HR sees: "pending" (manager/other position requests) OR "approved_manager" (salesman) OR "approved_team_lead" (programmer)
-            query = query.where("status", "in", ["pending", "approved_manager", "approved_team_lead"]);
+            // HR sees: "pending" (manager/other position requests) OR "approved_manager" (salesman) OR "approved_team_lead" (programmer) OR "approved_warehouse_manager" (warehouse worker/administrator)
+            query = query.where("status", "in", ["pending", "approved_manager", "approved_team_lead", "approved_warehouse_manager"]);
         }
         if(level === "approver"){
             // Approver sees: "pending" (HR requests) OR "approved_hr" (regular flow)
