@@ -184,15 +184,25 @@ const buildApproverNotificationContent = (level, { employeeName, leaveTypeName, 
 const isAnnualLeave = (leaveTypeName, leaveTypeNameEng) => {
     if (!leaveTypeName && !leaveTypeNameEng) return false;
     
-    const name = (leaveTypeName || '').toLowerCase();
-    const nameEng = (leaveTypeNameEng || '').toLowerCase();
+    const name = (leaveTypeName || '').toLowerCase().trim();
+    const nameEng = (leaveTypeNameEng || '').toLowerCase().trim();
     
-    // Check for common annual leave identifiers
-    const annualKeywords = ['annual', 'ลาปี', 'ลา', 'yearly'];
+    // Check for specific annual leave identifiers only
+    // Note: 'ลา' alone is too generic (matches all Thai leave types like ลาป่วย, ลากิจ, etc.)
+    // Match specific annual leave keywords:
+    // - Thai: 'ลาปี' (annual leave), 'ลาพักร้อน' (vacation/annual leave)
+    // - English: 'annual', 'yearly', 'vacation'
+    const annualKeywords = ['annual', 'ลาปี', 'ลาพักร้อน', 'yearly', 'vacation'];
     
-    return annualKeywords.some(keyword => 
-        name.includes(keyword) || nameEng.includes(keyword)
-    );
+    // Check if any annual keyword appears in the leave type name
+    return annualKeywords.some(keyword => {
+        // For Thai keywords, check if they appear in the name
+        if (keyword === 'ลาปี' || keyword === 'ลาพักร้อน') {
+            return name.includes(keyword) || nameEng.includes(keyword);
+        }
+        // For English keywords, check if they appear in either name
+        return name.includes(keyword) || nameEng.includes(keyword);
+    });
 };
 
 const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
@@ -2383,15 +2393,22 @@ const getEmployeeLeaveBalance = async (req, res) => {
 
         // Get all leave types with their quotas
         const leaveTypes = [];
+        let totalLeaveTypes = 0;
+        let filteredByGender = 0;
+        let filteredByAnnualLeave = 0;
+        
         settingsSnapshot.forEach(doc => {
+            totalLeaveTypes++;
             const setting = doc.data();
             const leaveTypeName = setting.leaveTypeName;
             const leaveTypeNameEng = setting.leaveTypeNameEng;
+            const settingGender = setting.gender || "All";
             
             // Filter by gender if applicable
             if (!setting.gender || setting.gender === "All" || setting.gender === employeeGender) {
                 // Filter out annual leave if employee is not eligible (< 3 months)
                 if (!eligibleForAnnualLeave && isAnnualLeave(leaveTypeName, leaveTypeNameEng)) {
+                    filteredByAnnualLeave++;
                     return; // Skip this leave type
                 }
                 
@@ -2404,7 +2421,20 @@ const getEmployeeLeaveBalance = async (req, res) => {
                     isActive: setting.isActive !== false,
                     description: setting.description || '-'
                 });
+            } else {
+                filteredByGender++;
             }
+        });
+        
+        // Debug logging
+        console.log(`📊 Leave Balance Debug for ${employeeId}:`, {
+            totalLeaveTypes,
+            employeeGender,
+            filteredByGender,
+            filteredByAnnualLeave,
+            eligibleForAnnualLeave,
+            monthsWithCompany,
+            finalLeaveTypesCount: leaveTypes.length
         });
 
         // Step 2: Get all APPROVED leave requests for this employee in the year
@@ -2499,6 +2529,13 @@ const getEmployeeLeaveBalance = async (req, res) => {
                 totalDaysUsed: balances.reduce((sum, b) => sum + b.used, 0),
                 totalDaysRemaining: balances.reduce((sum, b) => sum + b.remaining, 0),
                 totalRemainingHours: Math.round(balances.reduce((sum, b) => sum + b.remainingHours, 0) * 100) / 100
+            },
+            debug: {
+                totalLeaveTypesInDB: totalLeaveTypes,
+                filteredByGender: filteredByGender,
+                filteredByAnnualLeave: filteredByAnnualLeave,
+                employeeGender: employeeGender,
+                finalLeaveTypesCount: leaveTypes.length
             }
         });
 
