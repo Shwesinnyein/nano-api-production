@@ -1015,10 +1015,18 @@ const createLeaveRequest = async (req, res) => {
         let initialStatus = "pending";
         let initialStatusName = "Pending";
         
-        console.log(`🔍 Leave routing for positionName: "${positionName}", role: "${employeeRole}"`);
+        console.log(`🔍 Leave routing for positionName: "${positionName}", role: "${employeeRole}", company: "${finalCompany}"`);
         
-        // Check if requester is a final approver (highest level)
-        if (employeeRole === "approver" || employeeRole === "approver-three") {
+        // Check if company is nano-vip - all requests go directly to HR, HR is final approver
+        const isNanoVip = (finalCompany && (finalCompany.toLowerCase() === "nano-vip" || finalCompany.toLowerCase().includes("nano-vip"))) ||
+                         (finalCompanyName && finalCompanyName.toLowerCase().includes("nano-vip"));
+        
+        if (isNanoVip) {
+            // nano-vip employees: Employee → HR (directly) → Fully Approved (HR is final)
+            firstApprover = "hr";
+            console.log(`✅ nano-vip company detected → Direct to HR (HR is final approver)`);
+        } else if (employeeRole === "approver" || employeeRole === "approver-three") {
+            // Check if requester is a final approver (highest level)
             // Approver requests leave → Auto-approve (no one above them)
             firstApprover = null;
             initialStatus = "approved";
@@ -1877,6 +1885,10 @@ const approveLeaveRequest = async (req, res) => {
             });
         }
         
+        // Check if this is a nano-vip company leave request
+        const isNanoVip = (leaveData.company && (leaveData.company.toLowerCase() === "nano-vip" || leaveData.company.toLowerCase().includes("nano-vip"))) ||
+                         (leaveData.companyName && leaveData.companyName.toLowerCase().includes("nano-vip"));
+        
         // Determine next approval level based on current approval level
         let nextApprover = null;
         let newStatus = "pending";
@@ -1897,8 +1909,15 @@ const approveLeaveRequest = async (req, res) => {
                     newStatus = "approved_warehouse_manager";
                     break;
                 case "hr":
-                    nextApprover = "approver";
-                    newStatus = "approved_hr";
+                    // For nano-vip: HR is final approver, no need to go to approver
+                    if (isNanoVip) {
+                        nextApprover = null;
+                        newStatus = "approved";
+                        console.log(`✅ nano-vip company: HR approval is final`);
+                    } else {
+                        nextApprover = "approver";
+                        newStatus = "approved_hr";
+                    }
                     break;
                 case "approver":
                     nextApprover = null;
