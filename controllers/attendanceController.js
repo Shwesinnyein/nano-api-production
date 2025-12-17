@@ -93,12 +93,11 @@ const checkInOut = async (req, res) => {
             if (isOvernightWorker) {
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("timestamp", "desc")
-                    .limit(10);
+                    .limit(50); // Get more records to ensure we find unchecked-in ones
                 
                 const allRecordsSnapshot = await allRecordsQuery.get();
                 
-                // Check if there's any unchecked-in record
+                // Check if there's any unchecked-in record (no need to sort, just find any)
                 for (const doc of allRecordsSnapshot.docs) {
                     const recordData = doc.data();
                     if (recordData.type === 'checkin' && !recordData.checkOutAt) {
@@ -339,22 +338,38 @@ const checkInOut = async (req, res) => {
             if (isOvernightWorker && existingSnapshot.empty) {
                 console.log(`🔍 Overnight worker - searching for most recent unchecked-in record...`);
                 
-                // Get all attendance records for this employee, ordered by timestamp descending
-                // Using only timestamp to avoid composite index requirement
+                // Get all attendance records for this employee (no orderBy to avoid index requirement)
+                // We'll sort in memory instead
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("timestamp", "desc")
-                    .limit(10);
+                    .limit(50); // Get more records to ensure we find the unchecked-in one
                 
                 const allRecordsSnapshot = await allRecordsQuery.get();
                 
-                // Find the most recent check-in record that hasn't been checked out
-                for (const doc of allRecordsSnapshot.docs) {
+                // Sort records by timestamp descending in memory
+                const records = [];
+                allRecordsSnapshot.forEach(doc => {
                     const recordData = doc.data();
-                    if (recordData.type === 'checkin' && !recordData.checkOutAt) {
-                        existingRecord = doc;
-                        existingData = recordData;
-                        console.log(`✅ Found unchecked-in record from ${recordData.date} (check-in date)`);
+                    records.push({
+                        doc: doc,
+                        data: recordData,
+                        timestamp: recordData.timestamp || recordData.createdAt || '0'
+                    });
+                });
+                
+                // Sort by timestamp descending
+                records.sort((a, b) => {
+                    const timeA = new Date(a.timestamp).getTime();
+                    const timeB = new Date(b.timestamp).getTime();
+                    return timeB - timeA; // Descending
+                });
+                
+                // Find the most recent check-in record that hasn't been checked out
+                for (const record of records) {
+                    if (record.data.type === 'checkin' && !record.data.checkOutAt) {
+                        existingRecord = record.doc;
+                        existingData = record.data;
+                        console.log(`✅ Found unchecked-in record from ${record.data.date} (check-in date)`);
                         break;
                     }
                 }
@@ -430,11 +445,19 @@ const checkInOut = async (req, res) => {
         }
 
     } catch (error) {
-        console.error("Check In/Out error:", error);
+        console.error("❌ Check In/Out error:", error);
+        console.error("Error stack:", error.stack);
+        console.error("Error details:", {
+            message: error.message,
+            code: error.code,
+            employeeId: req.body?.employeeId,
+            type: req.body?.type
+        });
         res.status(500).json({
             success: false,
             message: "Internal server error",
-            error: error.message
+            error: error.message,
+            code: error.code || 'UNKNOWN_ERROR'
         });
     }
 };
@@ -800,14 +823,31 @@ const getTodayAttendanceStatus = async (req, res) => {
             if (isOvernightWorker) {
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("timestamp", "desc")
-                    .limit(10);
+                    .limit(50); // Get more records to ensure we find the unchecked-in one
                 
                 const allRecordsSnapshot = await allRecordsQuery.get();
                 
-                // Find the most recent unchecked-in record
-                for (const doc of allRecordsSnapshot.docs) {
+                // Sort records by timestamp descending in memory
+                const records = [];
+                allRecordsSnapshot.forEach(doc => {
                     const recordData = doc.data();
+                    records.push({
+                        doc: doc,
+                        data: recordData,
+                        timestamp: recordData.timestamp || recordData.createdAt || '0'
+                    });
+                });
+                
+                // Sort by timestamp descending
+                records.sort((a, b) => {
+                    const timeA = new Date(a.timestamp).getTime();
+                    const timeB = new Date(b.timestamp).getTime();
+                    return timeB - timeA; // Descending
+                });
+                
+                // Find the most recent unchecked-in record
+                for (const record of records) {
+                    const recordData = record.data;
                     if (recordData.type === 'checkin' && !recordData.checkOutAt) {
                         // Found unchecked-in record from previous day - show checkout option
                         const checkInDate = recordData.checkInDate || recordData.date;
@@ -820,8 +860,8 @@ const getTodayAttendanceStatus = async (req, res) => {
                             canCheckIn: false, // Must check out first
                             canCheckOut: true,
                             record: {
-                                id: doc.id,
-                                uid: doc.id,
+                                id: record.doc.id,
+                                uid: record.doc.id,
                                 employeeId: recordData.employeeId,
                                 employeeName: recordData.employeeName,
                                 location: recordData.location,
