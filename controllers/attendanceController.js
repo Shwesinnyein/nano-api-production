@@ -93,7 +93,6 @@ const checkInOut = async (req, res) => {
             if (isOvernightWorker) {
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("date", "desc")
                     .orderBy("timestamp", "desc")
                     .limit(10);
                 
@@ -340,10 +339,10 @@ const checkInOut = async (req, res) => {
             if (isOvernightWorker && existingSnapshot.empty) {
                 console.log(`🔍 Overnight worker - searching for most recent unchecked-in record...`);
                 
-                // Get all attendance records for this employee, ordered by date descending
+                // Get all attendance records for this employee, ordered by timestamp descending
+                // Using only timestamp to avoid composite index requirement
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("date", "desc")
                     .orderBy("timestamp", "desc")
                     .limit(10);
                 
@@ -801,7 +800,6 @@ const getTodayAttendanceStatus = async (req, res) => {
             if (isOvernightWorker) {
                 const allRecordsQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .orderBy("date", "desc")
                     .orderBy("timestamp", "desc")
                     .limit(10);
                 
