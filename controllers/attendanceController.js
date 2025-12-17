@@ -64,23 +64,71 @@ const checkInOut = async (req, res) => {
 
         if (type === 'checkin') {
             // CHECK IN LOGIC
-            if (!existingSnapshot.empty) {
-                const existingRecord = existingSnapshot.docs[0].data();
+            // First, get employee data to check if they are driver or security (overnight shift workers)
+            let employeePosition = null;
+            let isOvernightWorker = false;
+            
+            try {
+                const employeeQuery = db.collection("employees")
+                    .where("uid", "==", employeeId)
+                    .limit(1);
                 
-                // Check if already checked in today
-                if (existingRecord.type === 'checkin' && !existingRecord.checkOutAt) {
-                    return res.status(400).json({
-                        success: false,
-                        message: "You have already checked in today. Please check out first."
-                    });
+                const employeeSnapshot = await employeeQuery.get();
+                
+                if (!employeeSnapshot.empty) {
+                    const employeeData = employeeSnapshot.docs[0].data();
+                    employeePosition = employeeData.positionName;
+                    
+                    // Check if position is driver or security (overnight shift workers)
+                    const overnightPositions = ['Driver', 'driver', 'Security', 'security', 'Security Guard', 'security guard'];
+                    isOvernightWorker = overnightPositions.some(pos => 
+                        employeePosition && employeePosition.toLowerCase().includes(pos.toLowerCase())
+                    );
                 }
+            } catch (empError) {
+                console.warn("Could not fetch employee data for overnight check:", empError.message);
+            }
+            
+            // For overnight workers: check for ANY unchecked-in record (not just today)
+            if (isOvernightWorker) {
+                const allRecordsQuery = db.collection("employee-attendance")
+                    .where("employeeId", "==", employeeId)
+                    .orderBy("date", "desc")
+                    .orderBy("timestamp", "desc")
+                    .limit(10);
                 
-                // Check if already checked out today
-                if (existingRecord.type === 'checkout') {
-                    return res.status(400).json({
-                        success: false,
-                        message: "You have already completed your attendance for today."
-                    });
+                const allRecordsSnapshot = await allRecordsQuery.get();
+                
+                // Check if there's any unchecked-in record
+                for (const doc of allRecordsSnapshot.docs) {
+                    const recordData = doc.data();
+                    if (recordData.type === 'checkin' && !recordData.checkOutAt) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `You have an unchecked-in record from ${recordData.checkInDate || recordData.date}. Please check out first before checking in again.`
+                        });
+                    }
+                }
+            } else {
+                // Regular workers: check today's record only
+                if (!existingSnapshot.empty) {
+                    const existingRecord = existingSnapshot.docs[0].data();
+                    
+                    // Check if already checked in today
+                    if (existingRecord.type === 'checkin' && !existingRecord.checkOutAt) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "You have already checked in today. Please check out first."
+                        });
+                    }
+                    
+                    // Check if already checked out today
+                    if (existingRecord.type === 'checkout') {
+                        return res.status(400).json({
+                            success: false,
+                            message: "You have already completed your attendance for today."
+                        });
+                    }
                 }
             }
 
@@ -218,7 +266,9 @@ const checkInOut = async (req, res) => {
                 date: dateString,
                 time: localTimeString,
                 checkInAt: localTimeString,
+                checkInDate: dateString, // Date when checked in (YYYY-MM-DD)
                 checkOutAt: null,
+                checkOutDate: null, // Will be set on check-out
                 timestamp: thaiTime.toISOString(),
                 createdAt: thaiTime.toISOString(),
                 updatedAt: thaiTime.toISOString(),
@@ -245,7 +295,9 @@ const checkInOut = async (req, res) => {
                     type: 'checkin',
                     date: dateString,
                     checkInAt: localTimeString,
+                    checkInDate: dateString,
                     checkOutAt: null,
+                    checkOutDate: null,
                     timestamp: currentDate.toISOString(),
                     status: status,
                     lateMinutes: lateMinutes
@@ -254,21 +306,79 @@ const checkInOut = async (req, res) => {
 
         } else if (type === 'checkout') {
             // CHECK OUT LOGIC
-            if (existingSnapshot.empty) {
+            // First, get employee data to check if they are driver or security (overnight shift workers)
+            let employeePosition = null;
+            let isOvernightWorker = false;
+            
+            try {
+                const employeeQuery = db.collection("employees")
+                    .where("uid", "==", employeeId)
+                    .limit(1);
+                
+                const employeeSnapshot = await employeeQuery.get();
+                
+                if (!employeeSnapshot.empty) {
+                    const employeeData = employeeSnapshot.docs[0].data();
+                    employeePosition = employeeData.positionName;
+                    
+                    // Check if position is driver or security (overnight shift workers)
+                    const overnightPositions = ['Driver', 'driver', 'Security', 'security', 'Security Guard', 'security guard'];
+                    isOvernightWorker = overnightPositions.some(pos => 
+                        employeePosition && employeePosition.toLowerCase().includes(pos.toLowerCase())
+                    );
+                    
+                    console.log(`Employee ${employeeId} position: ${employeePosition}, isOvernightWorker: ${isOvernightWorker}`);
+                }
+            } catch (empError) {
+                console.warn("Could not fetch employee data for overnight check:", empError.message);
+            }
+            
+            let existingRecord = null;
+            let existingData = null;
+            
+            // For overnight workers: look for most recent unchecked-in record (not just today)
+            if (isOvernightWorker && existingSnapshot.empty) {
+                console.log(`🔍 Overnight worker - searching for most recent unchecked-in record...`);
+                
+                // Get all attendance records for this employee, ordered by date descending
+                const allRecordsQuery = db.collection("employee-attendance")
+                    .where("employeeId", "==", employeeId)
+                    .orderBy("date", "desc")
+                    .orderBy("timestamp", "desc")
+                    .limit(10);
+                
+                const allRecordsSnapshot = await allRecordsQuery.get();
+                
+                // Find the most recent check-in record that hasn't been checked out
+                for (const doc of allRecordsSnapshot.docs) {
+                    const recordData = doc.data();
+                    if (recordData.type === 'checkin' && !recordData.checkOutAt) {
+                        existingRecord = doc;
+                        existingData = recordData;
+                        console.log(`✅ Found unchecked-in record from ${recordData.date} (check-in date)`);
+                        break;
+                    }
+                }
+            } else if (!existingSnapshot.empty) {
+                // Regular worker or found today's record
+                existingRecord = existingSnapshot.docs[0];
+                existingData = existingRecord.data();
+            }
+            
+            if (!existingRecord || !existingData) {
                 return res.status(400).json({
                     success: false,
-                    message: "No check-in record found for today. Please check in first."
+                    message: isOvernightWorker 
+                        ? "No unchecked-in record found. Please check in first."
+                        : "No check-in record found for today. Please check in first."
                 });
             }
 
-            const existingRecord = existingSnapshot.docs[0];
-            const existingData = existingRecord.data();
-
             // Check if already checked out
-            if (existingData.type === 'checkout') {
+            if (existingData.type === 'checkout' || existingData.checkOutAt) {
                 return res.status(400).json({
                     success: false,
-                    message: "You have already checked out today."
+                    message: "You have already checked out for this shift."
                 });
             }
 
@@ -284,6 +394,7 @@ const checkInOut = async (req, res) => {
                     type: 'checkout',
                     time: localTimeString,
                     checkOutAt: localTimeString,
+                    checkOutDate: dateString, // Date when checked out (YYYY-MM-DD)
                     currentLocation: finalCurrentLocation, // Update currentLocation on checkout
                     checkOutLocation: checkOutLocation || null, // Save checkOutLocation as separate field
                     updatedAt: thaiTime.toISOString()
@@ -302,9 +413,12 @@ const checkInOut = async (req, res) => {
                         currentLocation: finalCurrentLocation,
                         checkOutLocation: checkOutLocation || null,
                         type: 'checkout',
-                        date: dateString,
+                        date: dateString, // Check-out date (today)
                         checkInAt: existingData.checkInAt,
+                        checkInDate: existingData.checkInDate || existingData.date, // Check-in date (may be yesterday for overnight workers)
                         checkOutAt: localTimeString,
+                        checkOutDate: dateString, // Check-out date (today)
+                        isOvernightShift: isOvernightWorker && (existingData.checkInDate || existingData.date) !== dateString,
                         timestamp: thaiTime.toISOString()
                     }
                 });
@@ -581,8 +695,10 @@ const checkAutoCheckInNeeded = async (req, res) => {
                     type: 'checkout',
                     date: yesterdayString,
                     time: '23:59:00', // Auto checkout at 11:59 PM
-                    checkInAt: null,
+                    checkInAt: lastRecord.checkInAt || null,
+                    checkInDate: lastRecord.checkInDate || lastRecord.date || yesterdayString,
                     checkOutAt: '23:59:00',
+                    checkOutDate: yesterdayString,
                     timestamp: new Date(yesterdayString + 'T23:59:00.000Z').toISOString(),
                     createdAt: now.toISOString(),
                     updatedAt: now.toISOString(),
@@ -649,6 +765,29 @@ const getTodayAttendanceStatus = async (req, res) => {
 
         const today = new Date().toISOString().split('T')[0];
         
+        // First, check if employee is driver or security (overnight shift workers)
+        let isOvernightWorker = false;
+        try {
+            const employeeQuery = db.collection("employees")
+                .where("uid", "==", employeeId)
+                .limit(1);
+            
+            const employeeSnapshot = await employeeQuery.get();
+            
+            if (!employeeSnapshot.empty) {
+                const employeeData = employeeSnapshot.docs[0].data();
+                const employeePosition = employeeData.positionName;
+                
+                // Check if position is driver or security (overnight shift workers)
+                const overnightPositions = ['Driver', 'driver', 'Security', 'security', 'Security Guard', 'security guard'];
+                isOvernightWorker = overnightPositions.some(pos => 
+                    employeePosition && employeePosition.toLowerCase().includes(pos.toLowerCase())
+                );
+            }
+        } catch (empError) {
+            console.warn("Could not fetch employee data:", empError.message);
+        }
+        
         // Get today's attendance record for this employee
         const query = db.collection("employee-attendance")
             .where("employeeId", "==", employeeId)
@@ -658,7 +797,56 @@ const getTodayAttendanceStatus = async (req, res) => {
         const snapshot = await query.get();
         
         if (snapshot.empty) {
-            // No record today - show check in
+            // No record today - for overnight workers, check for unchecked-in record from previous days
+            if (isOvernightWorker) {
+                const allRecordsQuery = db.collection("employee-attendance")
+                    .where("employeeId", "==", employeeId)
+                    .orderBy("date", "desc")
+                    .orderBy("timestamp", "desc")
+                    .limit(10);
+                
+                const allRecordsSnapshot = await allRecordsQuery.get();
+                
+                // Find the most recent unchecked-in record
+                for (const doc of allRecordsSnapshot.docs) {
+                    const recordData = doc.data();
+                    if (recordData.type === 'checkin' && !recordData.checkOutAt) {
+                        // Found unchecked-in record from previous day - show checkout option
+                        const checkInDate = recordData.checkInDate || recordData.date;
+                        return res.json({
+                            success: true,
+                            status: "checked_in_previous_day",
+                            action: "checkout",
+                            message: `You have an unchecked-in record from ${checkInDate}. Please check out first, then you can check in for today.`,
+                            buttonText: "Check Out",
+                            canCheckIn: false, // Must check out first
+                            canCheckOut: true,
+                            record: {
+                                id: doc.id,
+                                uid: doc.id,
+                                employeeId: recordData.employeeId,
+                                employeeName: recordData.employeeName,
+                                location: recordData.location,
+                                branch: recordData.branch,
+                                branchName: recordData.branchName,
+                                type: recordData.type,
+                                checkInAt: recordData.checkInAt,
+                                checkInDate: checkInDate,
+                                checkOutAt: recordData.checkOutAt,
+                                checkOutDate: recordData.checkOutDate,
+                                date: recordData.date,
+                                time: recordData.time,
+                                timestamp: recordData.timestamp,
+                                createdAt: recordData.createdAt,
+                                updatedAt: recordData.updatedAt,
+                                isOvernightShift: true
+                            }
+                        });
+                    }
+                }
+            }
+            
+            // No record today and no unchecked-in record - show check in
             return res.json({
                 success: true,
                 status: "no_record",
@@ -693,46 +881,82 @@ const getTodayAttendanceStatus = async (req, res) => {
                     branchName: record.branchName,
                     type: record.type,
                     checkInAt: record.checkInAt,
+                    checkInDate: record.checkInDate,
                     checkOutAt: record.checkOutAt,
+                    checkOutDate: record.checkOutDate,
                     date: record.date,
                     time: record.time,
                     timestamp: record.timestamp,
                     createdAt: record.createdAt,
                     updatedAt: record.updatedAt,
-                    isAutoCheckout: record.isAutoCheckout,
-                   
+                    isAutoCheckout: record.isAutoCheckout
                 }
             });
         } else if (record.type === 'checkout') {
-            // Already checked out - show completed
-            return res.json({
-                success: true,
-                status: "checked_out",
-                action: "completed",
-                message: "Already completed attendance for today",
-                buttonText: "Completed",
-                canCheckIn: false,
-                canCheckOut: false,
-                record: {
-                    id: snapshot.docs[0].id,
-                    uid: snapshot.docs[0].id,
-                    employeeId: record.employeeId,
-                    employeeName: record.employeeName,
-                    location: record.location,
-                    branch: record.branch,
-                    branchName: record.branchName,
-                    type: record.type,
-                    checkInAt: record.checkInAt,
-                    checkOutAt: record.checkOutAt,
-                    date: record.date,
-                    time: record.time,
-                    timestamp: record.timestamp,
-                    createdAt: record.createdAt,
-                    updatedAt: record.updatedAt,
-                    isAutoCheckout: record.isAutoCheckout,
-                   
-                }
-            });
+            // Already checked out today - for overnight workers, check if they can check in for new shift
+            if (isOvernightWorker) {
+                // After checkout, they can check in for today
+                return res.json({
+                    success: true,
+                    status: "checked_out",
+                    action: "checkin",
+                    message: "Already checked out. You can check in for a new shift.",
+                    buttonText: "Check In",
+                    canCheckIn: true,
+                    canCheckOut: false,
+                    record: {
+                        id: snapshot.docs[0].id,
+                        uid: snapshot.docs[0].id,
+                        employeeId: record.employeeId,
+                        employeeName: record.employeeName,
+                        location: record.location,
+                        branch: record.branch,
+                        branchName: record.branchName,
+                        type: record.type,
+                        checkInAt: record.checkInAt,
+                        checkInDate: record.checkInDate,
+                        checkOutAt: record.checkOutAt,
+                        checkOutDate: record.checkOutDate,
+                        date: record.date,
+                        time: record.time,
+                        timestamp: record.timestamp,
+                        createdAt: record.createdAt,
+                        updatedAt: record.updatedAt,
+                        isAutoCheckout: record.isAutoCheckout
+                    }
+                });
+            } else {
+                // Regular workers - already completed for today
+                return res.json({
+                    success: true,
+                    status: "checked_out",
+                    action: "completed",
+                    message: "Already completed attendance for today",
+                    buttonText: "Completed",
+                    canCheckIn: false,
+                    canCheckOut: false,
+                    record: {
+                        id: snapshot.docs[0].id,
+                        uid: snapshot.docs[0].id,
+                        employeeId: record.employeeId,
+                        employeeName: record.employeeName,
+                        location: record.location,
+                        branch: record.branch,
+                        branchName: record.branchName,
+                        type: record.type,
+                        checkInAt: record.checkInAt,
+                        checkInDate: record.checkInDate,
+                        checkOutAt: record.checkOutAt,
+                        checkOutDate: record.checkOutDate,
+                        date: record.date,
+                        time: record.time,
+                        timestamp: record.timestamp,
+                        createdAt: record.createdAt,
+                        updatedAt: record.updatedAt,
+                        isAutoCheckout: record.isAutoCheckout
+                    }
+                });
+            }
         }
 
         // Fallback
