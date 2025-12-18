@@ -50,8 +50,14 @@ const checkInOut = async (req, res) => {
         const dateString = thaiTime.toISOString().split('T')[0]; // YYYY-MM-DD format
         const localTimeString = thaiTime.toTimeString().split(' ')[0]; // HH:MM:SS format only
         
+        // Calculate yesterday's date (for overnight workers)
+        const yesterday = new Date(thaiTime);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayString = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD format
+        
         console.log("Thailand time:", thaiTime.toLocaleString("en-US", {timeZone: "Asia/Bangkok"}));
         console.log("Date string:", dateString);
+        console.log("Yesterday string:", yesterdayString);
         console.log("Time string:", localTimeString);
 
         // Check if today's record already exists for this employee
@@ -89,21 +95,23 @@ const checkInOut = async (req, res) => {
                 console.warn("Could not fetch employee data for overnight check:", empError.message);
             }
             
-            // For overnight workers: check for ANY unchecked-in record (not just today)
+            // For overnight workers: check for unchecked-in record from yesterday only
             if (isOvernightWorker) {
-                const allRecordsQuery = db.collection("employee-attendance")
+                // Check yesterday's record specifically
+                const yesterdayRecordQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .limit(50); // Get more records to ensure we find unchecked-in ones
+                    .where("date", "==", yesterdayString)
+                    .limit(1);
                 
-                const allRecordsSnapshot = await allRecordsQuery.get();
+                const yesterdaySnapshot = await yesterdayRecordQuery.get();
                 
-                // Check if there's any unchecked-in record (no need to sort, just find any)
-                for (const doc of allRecordsSnapshot.docs) {
-                    const recordData = doc.data();
+                // Check if there's an unchecked-in record from yesterday
+                if (!yesterdaySnapshot.empty) {
+                    const recordData = yesterdaySnapshot.docs[0].data();
                     if (recordData.type === 'checkin' && !recordData.checkOutAt) {
                         return res.status(400).json({
                             success: false,
-                            message: `You have an unchecked-in record from ${recordData.checkInDate || recordData.date}. Please check out first before checking in again.`
+                            message: `You have an unchecked-in record from ${yesterdayString}. Please check out first before checking in again.`
                         });
                     }
                 }
@@ -334,47 +342,55 @@ const checkInOut = async (req, res) => {
             let existingRecord = null;
             let existingData = null;
             
-            // For overnight workers: look for most recent unchecked-in record (not just today)
-            if (isOvernightWorker && existingSnapshot.empty) {
-                console.log(`🔍 Overnight worker - searching for most recent unchecked-in record...`);
+            // First, check if today's record is a valid unchecked-in record
+            if (!existingSnapshot.empty) {
+                const todayRecord = existingSnapshot.docs[0];
+                const todayData = todayRecord.data();
                 
-                // Get all attendance records for this employee (no orderBy to avoid index requirement)
-                // We'll sort in memory instead
-                const allRecordsQuery = db.collection("employee-attendance")
-                    .where("employeeId", "==", employeeId)
-                    .limit(50); // Get more records to ensure we find the unchecked-in one
-                
-                const allRecordsSnapshot = await allRecordsQuery.get();
-                
-                // Sort records by timestamp descending in memory
-                const records = [];
-                allRecordsSnapshot.forEach(doc => {
-                    const recordData = doc.data();
-                    records.push({
-                        doc: doc,
-                        data: recordData,
-                        timestamp: recordData.timestamp || recordData.createdAt || '0'
-                    });
-                });
-                
-                // Sort by timestamp descending
-                records.sort((a, b) => {
-                    const timeA = new Date(a.timestamp).getTime();
-                    const timeB = new Date(b.timestamp).getTime();
-                    return timeB - timeA; // Descending
-                });
-                
-                // Find the most recent check-in record that hasn't been checked out
-                for (const record of records) {
-                    if (record.data.type === 'checkin' && !record.data.checkOutAt) {
-                        existingRecord = record.doc;
-                        existingData = record.data;
-                        console.log(`✅ Found unchecked-in record from ${record.data.date} (check-in date)`);
-                        break;
-                    }
+                // Check if today's record is an unchecked-in record
+                if ((todayData.type === 'checkin' || todayData.checkInAt) && 
+                    (!todayData.checkOutAt || todayData.checkOutAt === null || todayData.checkOutAt === '')) {
+                    // Found valid unchecked-in record for today
+                    existingRecord = todayRecord;
+                    existingData = todayData;
+                    console.log(`✅ Found unchecked-in record for today`);
                 }
-            } else if (!existingSnapshot.empty) {
-                // Regular worker or found today's record
+            }
+            
+            // For overnight workers: if no valid unchecked-in record found for today, 
+            // check yesterday's record only
+            if (!existingRecord && isOvernightWorker) {
+                console.log(`🔍 Overnight worker - checking yesterday's record (${yesterdayString})...`);
+                
+                // Check yesterday's record specifically
+                const yesterdayRecordQuery = db.collection("employee-attendance")
+                    .where("employeeId", "==", employeeId)
+                    .where("date", "==", yesterdayString)
+                    .limit(1);
+                
+                const yesterdaySnapshot = await yesterdayRecordQuery.get();
+                
+                if (!yesterdaySnapshot.empty) {
+                    const yesterdayRecord = yesterdaySnapshot.docs[0];
+                    const yesterdayData = yesterdayRecord.data();
+                    
+                    const isCheckIn = yesterdayData.type === 'checkin' || yesterdayData.checkInAt;
+                    const hasNoCheckOut = !yesterdayData.checkOutAt || 
+                                         yesterdayData.checkOutAt === null || 
+                                         yesterdayData.checkOutAt === '';
+                    
+                    if (isCheckIn && hasNoCheckOut) {
+                        existingRecord = yesterdayRecord;
+                        existingData = yesterdayData;
+                        console.log(`✅ Found unchecked-in record from yesterday (${yesterdayString})`);
+                    } else {
+                        console.log(`❌ Yesterday's record exists but is already checked out or not a check-in`);
+                    }
+                } else {
+                    console.log(`❌ No record found for yesterday (${yesterdayString})`);
+                }
+            } else if (!existingRecord && !existingSnapshot.empty) {
+                // Regular worker - use today's record if exists
                 existingRecord = existingSnapshot.docs[0];
                 existingData = existingRecord.data();
             }
@@ -787,6 +803,12 @@ const getTodayAttendanceStatus = async (req, res) => {
 
         const today = new Date().toISOString().split('T')[0];
         
+        // Calculate yesterday's date (for overnight workers)
+        const todayDate = new Date();
+        const yesterdayDate = new Date(todayDate);
+        yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+        const yesterday = yesterdayDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+        
         // First, check if employee is driver or security (overnight shift workers)
         let isOvernightWorker = false;
         try {
@@ -819,49 +841,31 @@ const getTodayAttendanceStatus = async (req, res) => {
         const snapshot = await query.get();
         
         if (snapshot.empty) {
-            // No record today - for overnight workers, check for unchecked-in record from previous days
+            // No record today - for overnight workers, check yesterday's record only
             if (isOvernightWorker) {
-                const allRecordsQuery = db.collection("employee-attendance")
+                // Check yesterday's record specifically
+                const yesterdayRecordQuery = db.collection("employee-attendance")
                     .where("employeeId", "==", employeeId)
-                    .limit(50); // Get more records to ensure we find the unchecked-in one
+                    .where("date", "==", yesterday)
+                    .limit(1);
                 
-                const allRecordsSnapshot = await allRecordsQuery.get();
+                const yesterdaySnapshot = await yesterdayRecordQuery.get();
                 
-                // Sort records by timestamp descending in memory
-                const records = [];
-                allRecordsSnapshot.forEach(doc => {
-                    const recordData = doc.data();
-                    records.push({
-                        doc: doc,
-                        data: recordData,
-                        timestamp: recordData.timestamp || recordData.createdAt || '0'
-                    });
-                });
-                
-                // Sort by timestamp descending
-                records.sort((a, b) => {
-                    const timeA = new Date(a.timestamp).getTime();
-                    const timeB = new Date(b.timestamp).getTime();
-                    return timeB - timeA; // Descending
-                });
-                
-                // Find the most recent unchecked-in record
-                for (const record of records) {
-                    const recordData = record.data;
+                if (!yesterdaySnapshot.empty) {
+                    const recordData = yesterdaySnapshot.docs[0].data();
                     if (recordData.type === 'checkin' && !recordData.checkOutAt) {
-                        // Found unchecked-in record from previous day - show checkout option
-                        const checkInDate = recordData.checkInDate || recordData.date;
+                        // Found unchecked-in record from yesterday - show checkout option
                         return res.json({
                             success: true,
                             status: "checked_in_previous_day",
                             action: "checkout",
-                            message: `You have an unchecked-in record from ${checkInDate}. Please check out first, then you can check in for today.`,
+                            message: `You have an unchecked-in record from ${yesterday}. Please check out first, then you can check in for today.`,
                             buttonText: "Check Out",
                             canCheckIn: false, // Must check out first
                             canCheckOut: true,
                             record: {
-                                id: record.doc.id,
-                                uid: record.doc.id,
+                                id: yesterdaySnapshot.docs[0].id,
+                                uid: yesterdaySnapshot.docs[0].id,
                                 employeeId: recordData.employeeId,
                                 employeeName: recordData.employeeName,
                                 location: recordData.location,
@@ -869,7 +873,7 @@ const getTodayAttendanceStatus = async (req, res) => {
                                 branchName: recordData.branchName,
                                 type: recordData.type,
                                 checkInAt: recordData.checkInAt,
-                                checkInDate: checkInDate,
+                                checkInDate: yesterday,
                                 checkOutAt: recordData.checkOutAt,
                                 checkOutDate: recordData.checkOutDate,
                                 date: recordData.date,
