@@ -227,25 +227,46 @@ const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
 
     switch ((level || '').toLowerCase()) {
         case 'manager': {
-            console.log('📨 findApproverIdsByLevel: 2', level, employeeId);
+            console.log(`📨 findApproverIdsByLevel: Looking for managers for branch: ${finalBranchCode}`);
+            
+            // Step 1: Find managers who manage this branch (via managedBranches)
+            // This handles cases where a branch doesn't have its own manager
+            // Example: Branch 005 has no manager, but Branch 002 manager manages 005
             const managersWithManagedBranchesQuery = await employeesRef
                 .where("positionName", "==", "Manager")
                 .get();
+            
+            let foundViaManagedBranches = 0;
             managersWithManagedBranchesQuery.forEach(doc => {
                 const managerData = doc.data();
-                if (Array.isArray(managerData.managedBranches) && managerData.managedBranches.includes(finalBranchCode)) {
+                const managedBranches = Array.isArray(managerData.managedBranches) ? managerData.managedBranches : [];
+                
+                if (managedBranches.includes(finalBranchCode)) {
+                    console.log(`✅ Found manager ${managerData.uid} (branch: ${managerData.branch}) who manages branch ${finalBranchCode}`);
                     ids.push(managerData.uid);
+                    foundViaManagedBranches++;
                 }
             });
 
+            // Step 2: Find managers in the same branch as the employee
+            // This handles cases where the branch has its own manager
             const sameBranchManagerQuery = await employeesRef
                 .where("branch", "==", finalBranchCode)
                 .where("positionName", "==", "Manager")
                 .get();
+            
+            let foundInSameBranch = 0;
             sameBranchManagerQuery.forEach(doc => {
                 const managerData = doc.data();
-                ids.push(managerData.uid);
+                // Avoid duplicates if manager was already found via managedBranches
+                if (!ids.includes(managerData.uid)) {
+                    console.log(`✅ Found manager ${managerData.uid} in same branch ${finalBranchCode}`);
+                    ids.push(managerData.uid);
+                    foundInSameBranch++;
+                }
             });
+            
+            console.log(`📊 Manager lookup result: ${ids.length} manager(s) found (${foundViaManagedBranches} via managed branches, ${foundInSameBranch} in same branch)`);
             break;
         }
         case 'team-lead': {
