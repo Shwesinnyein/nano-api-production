@@ -213,6 +213,23 @@ const normalizeBranchCode = (code) => {
     return normalized || null;
 };
 
+// Helper function to extract branch name from branchName field
+// "005 Srinagarindra" → "srinagarindra"
+// "002 Thepharak" → "thepharak"
+// "srinagarindra" → "srinagarindra" (already just the name)
+const extractBranchName = (branchName) => {
+    if (!branchName) return null;
+    const str = String(branchName).trim();
+    // If it contains spaces, take everything after the first part (branch code)
+    const parts = str.split(/\s+/);
+    if (parts.length > 1) {
+        // Take everything after the first part (branch code)
+        return parts.slice(1).join(' ').toLowerCase();
+    }
+    // If no spaces, assume it's already just the branch name
+    return str.toLowerCase();
+};
+
 const findApproverIdsByLevel = async (level, employeeId, branchCode = null, branchName = null) => {
     console.log('📨 findApproverIdsByLevel:', level, employeeId, branchCode ? `branch: ${branchCode}` : '', branchName ? `branchName: ${branchName}` : '');
     const employeesRef = db.collection("employees");
@@ -272,16 +289,40 @@ const findApproverIdsByLevel = async (level, employeeId, branchCode = null, bran
                 const normalizedManagedBranches = managedBranches.map(b => normalizeBranchCode(b)).filter(Boolean);
                 
                 // Check if this manager manages the employee's branch
-                // Compare against both branch code AND branch name (case-insensitive)
-                const matchesBranchCode = finalBranchCode && normalizedManagedBranches.includes(finalBranchCode);
-                const matchesBranchName = finalBranchName && normalizedManagedBranches.includes(finalBranchName);
+                // Use "contains" matching: check if branch/branchName contains any managed branch, or vice versa
+                const extractedBranchName = extractBranchName(originalBranchName) || finalBranchName;
+                const fullBranchName = normalizeBranchCode(originalBranchName) || finalBranchName;
+                
+                // Check if any managed branch matches (contains or is contained in) the employee's branch
+                let matchesBranchCode = false;
+                let matchesBranchName = false;
+                
+                if (finalBranchCode) {
+                    // Check if branch code matches any managed branch (exact or contains)
+                    matchesBranchCode = normalizedManagedBranches.some(managedBranch => 
+                        managedBranch === finalBranchCode || 
+                        managedBranch.includes(finalBranchCode) || 
+                        finalBranchCode.includes(managedBranch)
+                    );
+                }
+                
+                if (extractedBranchName || fullBranchName) {
+                    // Check if branch name matches any managed branch (exact or contains)
+                    const nameToCheck = extractedBranchName || fullBranchName;
+                    matchesBranchName = normalizedManagedBranches.some(managedBranch => 
+                        managedBranch === nameToCheck || 
+                        managedBranch.includes(nameToCheck) || 
+                        nameToCheck.includes(managedBranch)
+                    );
+                }
+                
                 const isMatch = matchesBranchCode || matchesBranchName;
                 
                 console.log(`🔍 Checking manager ${managerData.uid} (branch: ${managerData.branch}):`);
                 console.log(`   managedBranches = [${managedBranches.join(', ')}]`);
                 console.log(`   normalized = [${normalizedManagedBranches.join(', ')}]`);
                 console.log(`   employee branch code: "${finalBranchCode}" → matches: ${matchesBranchCode}`);
-                console.log(`   employee branch name: "${finalBranchName || 'N/A'}" → matches: ${matchesBranchName}`);
+                console.log(`   employee branch name: "${extractedBranchName || 'N/A'}" (extracted from "${originalBranchName || 'N/A'}") → matches: ${matchesBranchName}`);
                 
                 if (isMatch) {
                     console.log(`✅ Found manager ${managerData.uid} (branch: ${managerData.branch}) who manages this branch`);
@@ -1712,14 +1753,37 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
                 
                 if (!managerQuery.empty) {
                     const managerData = managerQuery.docs[0].data();
-                    managedBranches = managerData.managedBranches || [];
+                    managedBranches = Array.isArray(managerData.managedBranches) ? managerData.managedBranches : [];
                     
-                    // Fallback: if no managedBranches, use their own branch
-                    if (managedBranches.length === 0 && managerData.branch) {
-                        managedBranches = [managerData.branch];
+                    console.log(`🔍 Manager ${userId} data:`);
+                    console.log(`   branch: ${managerData.branch}`);
+                    console.log(`   branchName: ${managerData.branchName || 'N/A'}`);
+                    console.log(`   managedBranches (raw): [${managedBranches.join(', ')}]`);
+                    
+                    // Fallback: if no managedBranches, extract branch name from branchName
+                    // Example: "002 Thepharak" → "thepharak"
+                    if (managedBranches.length === 0) {
+                        if (managerData.branchName) {
+                            // Extract the branch name part (after the code)
+                            // "002 Thepharak" → "thepharak"
+                            // "005 Srinagarindra" → "srinagarindra"
+                            const branchNameParts = String(managerData.branchName).trim().split(/\s+/);
+                            if (branchNameParts.length > 1) {
+                                // Take everything after the first part (branch code)
+                                const extractedBranchName = branchNameParts.slice(1).join(' ').toLowerCase();
+                                managedBranches = [extractedBranchName];
+                            } else {
+                                // If no space, use the whole branchName
+                                managedBranches = [managerData.branchName.toLowerCase()];
+                            }
+                        } else if (managerData.branch) {
+                            managedBranches = [managerData.branch];
+                        }
+                        console.log(`   Using fallback managedBranches: [${managedBranches.join(', ')}]`);
                     }
                     
                 } else {
+                    console.log(`❌ Manager ${userId} not found in database`);
                 }
             } catch (error) {
                 console.error("❌ Error fetching manager data:", error);
@@ -1812,33 +1876,67 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
         
         // Filter by manager's managed branches and employee position (if manager level)
         let leaveRequests = allLeaveRequests;
-        if (level === "manager" && managedBranches.length > 0) {
-            // Normalize managed branches for comparison
-            const normalizedManagedBranches = managedBranches.map(b => normalizeBranchCode(b)).filter(Boolean);
-            console.log(`🔍 Manager filtering: normalized managedBranches = [${normalizedManagedBranches.join(', ')}]`);
+        if (level === "manager") {
+            console.log(`🔍 Manager filtering: Total requests before filtering: ${allLeaveRequests.length}`);
+            console.log(`🔍 Manager managedBranches (raw): [${managedBranches.join(', ')}]`);
             
-            leaveRequests = allLeaveRequests.filter(request => {
-                // Normalize request branch code and branch name for comparison
-                const normalizedRequestBranchCode = normalizeBranchCode(request.branchCode);
-                const normalizedRequestBranchName = normalizeBranchCode(request.branchName);
+            if (managedBranches.length > 0) {
+                // Normalize managed branches for comparison
+                const normalizedManagedBranches = managedBranches.map(b => normalizeBranchCode(b)).filter(Boolean);
+                console.log(`🔍 Manager filtering: normalized managedBranches = [${normalizedManagedBranches.join(', ')}]`);
                 
-                // Check if request is from manager's managed branches
-                // managedBranches contains branch NAMES, so compare against both code and name
-                const matchesBranchCode = normalizedRequestBranchCode && normalizedManagedBranches.includes(normalizedRequestBranchCode);
-                const matchesBranchName = normalizedRequestBranchName && normalizedManagedBranches.includes(normalizedRequestBranchName);
-                const fromManagedBranch = matchesBranchCode || matchesBranchName;
+                leaveRequests = allLeaveRequests.filter(request => {
+                    // Normalize request branch code and branch name for comparison
+                    const normalizedRequestBranchCode = normalizeBranchCode(request.branchCode);
+                    const extractedRequestBranchName = extractBranchName(request.branchName);
+                    const normalizedRequestBranchName = normalizeBranchCode(request.branchName);
+                    
+                    // Use "contains" matching: check if branch/branchName contains any managed branch, or vice versa
+                    let matchesBranchCode = false;
+                    let matchesBranchName = false;
+                    
+                    if (normalizedRequestBranchCode) {
+                        // Check if branch code matches any managed branch (exact or contains)
+                        matchesBranchCode = normalizedManagedBranches.some(managedBranch => 
+                            managedBranch === normalizedRequestBranchCode || 
+                            managedBranch.includes(normalizedRequestBranchCode) || 
+                            normalizedRequestBranchCode.includes(managedBranch)
+                        );
+                    }
+                    
+                    // Check branch name (extracted or full) against managed branches
+                    const nameToCheck = extractedRequestBranchName || normalizedRequestBranchName;
+                    if (nameToCheck) {
+                        // Check if branch name matches any managed branch (exact or contains)
+                        matchesBranchName = normalizedManagedBranches.some(managedBranch => 
+                            managedBranch === nameToCheck || 
+                            managedBranch.includes(nameToCheck) || 
+                            nameToCheck.includes(managedBranch)
+                        );
+                    }
+                    
+                    const fromManagedBranch = matchesBranchCode || matchesBranchName;
+                    
+                    // Managers can approve requests from Salesman and Programmer (positions that require manager approval)
+                    const requiresManagerApproval = request.positionName === "Salesman" || request.positionName === "Programmer";
+                    
+                    console.log(`🔍 Request ID ${request.id}:`);
+                    console.log(`   Employee: ${request.employeeName} (${request.positionName})`);
+                    console.log(`   Branch code: "${request.branchCode}" (normalized: "${normalizedRequestBranchCode}")`);
+                    console.log(`   Branch name: "${request.branchName || 'N/A'}" → extracted: "${extractedRequestBranchName || 'N/A'}"`);
+                    console.log(`   → matchesBranchCode: ${matchesBranchCode}, matchesBranchName: ${matchesBranchName}`);
+                    console.log(`   → fromManagedBranch: ${fromManagedBranch}, requiresManagerApproval: ${requiresManagerApproval}`);
+                    console.log(`   → INCLUDED: ${fromManagedBranch && requiresManagerApproval}`);
+                    
+                    // Manager can see requests from their managed branches AND from positions that require manager approval
+                    return fromManagedBranch && requiresManagerApproval;
+                });
                 
-                // Managers can approve requests from Salesman and Programmer (positions that require manager approval)
-                const requiresManagerApproval = request.positionName === "Salesman" || request.positionName === "Programmer";
-                
-                console.log(`🔍 Request from branch code "${request.branchCode}" (normalized: "${normalizedRequestBranchCode}"), branch name "${request.branchName || 'N/A'}" (normalized: "${normalizedRequestBranchName || 'N/A'}"), position: "${request.positionName}"`);
-                console.log(`   → matchesBranchCode: ${matchesBranchCode}, matchesBranchName: ${matchesBranchName}, fromManagedBranch: ${fromManagedBranch}, requiresManagerApproval: ${requiresManagerApproval}`);
-                
-                // Manager can see requests from their managed branches AND from positions that require manager approval
-                return fromManagedBranch && requiresManagerApproval;
-            });
-            
-            console.log(`📊 Filtered to ${leaveRequests.length} leave request(s) from managed branches`);
+                console.log(`📊 Filtered to ${leaveRequests.length} leave request(s) from managed branches`);
+            } else {
+                console.log(`⚠️ Manager has no managedBranches configured - showing no requests`);
+                leaveRequests = [];
+            }
         }
         
         // Also support manual branch filtering (optional) - ONLY for managers
@@ -1855,9 +1953,12 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
         
         res.json({
             success: true,
-            message: `Leave requests for ${level} approval retrieved successfully`,
+            message: leaveRequests.length === 0 
+                ? `No pending leave requests found for ${level} approval`
+                : `Leave requests for ${level} approval retrieved successfully`,
             count: leaveRequests.length,
-            data: leaveRequests
+            data: leaveRequests,
+            ...(level === "manager" && { managedBranches: managedBranches }) // Include managedBranches in response for debugging
         });
         
     } catch (error) {
