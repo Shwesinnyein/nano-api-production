@@ -205,33 +205,60 @@ const isAnnualLeave = (leaveTypeName, leaveTypeNameEng) => {
     });
 };
 
-const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
-    console.log('📨 findApproverIdsByLevel:', level, employeeId, branchCode ? `branch: ${branchCode}` : '');
+// Helper function to normalize branch codes/names for comparison
+const normalizeBranchCode = (code) => {
+    if (!code) return null;
+    // Convert to string, trim whitespace, lowercase for case-insensitive comparison
+    const normalized = String(code).trim().toLowerCase();
+    return normalized || null;
+};
+
+const findApproverIdsByLevel = async (level, employeeId, branchCode = null, branchName = null) => {
+    console.log('📨 findApproverIdsByLevel:', level, employeeId, branchCode ? `branch: ${branchCode}` : '', branchName ? `branchName: ${branchName}` : '');
     const employeesRef = db.collection("employees");
     const ids = [];
     
-    // Use provided branchCode, or fetch from employee data if not provided
-    let finalBranchCode = branchCode || "001";
+    // Keep original values for Firestore queries (case-sensitive)
+    let originalBranchCode = branchCode;
+    let originalBranchName = branchName;
     
-    if (!branchCode) {
+    // Normalized values for comparison with managedBranches (case-insensitive)
+    let finalBranchCode = normalizeBranchCode(branchCode);
+    let finalBranchName = normalizeBranchCode(branchName);
+    
+    if (!branchCode || !branchName) {
         try {
             const employeeQuery = await employeesRef.where("uid", "==", employeeId).limit(1).get();
             if (!employeeQuery.empty) {
                 const employeeData = employeeQuery.docs[0].data();
-                finalBranchCode = employeeData.branch || finalBranchCode;
+                if (!originalBranchCode) {
+                    originalBranchCode = employeeData.branch;
+                    finalBranchCode = normalizeBranchCode(employeeData.branch);
+                }
+                if (!originalBranchName) {
+                    originalBranchName = employeeData.branchName;
+                    finalBranchName = normalizeBranchCode(employeeData.branchName);
+                }
             }
         } catch (error) {
             console.error("❌ Error loading employee for approver lookup:", error);
         }
     }
+    
+    // Fallback if still no branch code
+    if (!originalBranchCode) {
+        originalBranchCode = "001";
+        finalBranchCode = "001";
+    }
 
     switch ((level || '').toLowerCase()) {
         case 'manager': {
-            console.log(`📨 findApproverIdsByLevel: Looking for managers for branch: ${finalBranchCode}`);
+            console.log(`📨 findApproverIdsByLevel: Looking for managers for branch code: "${branchCode || 'N/A'}" / branch name: "${branchName || 'N/A'}"`);
+            console.log(`📨 Normalized: code="${finalBranchCode}", name="${finalBranchName || 'N/A'}"`);
             
             // Step 1: Find managers who manage this branch (via managedBranches)
-            // This handles cases where a branch doesn't have its own manager
-            // Example: Branch 005 has no manager, but Branch 002 manager manages 005
+            // managedBranches contains branch NAMES (e.g., "thepharak", "srinagarindra")
+            // We need to compare both branch code AND branch name
             const managersWithManagedBranchesQuery = await employeesRef
                 .where("positionName", "==", "Manager")
                 .get();
@@ -241,17 +268,35 @@ const findApproverIdsByLevel = async (level, employeeId, branchCode = null) => {
                 const managerData = doc.data();
                 const managedBranches = Array.isArray(managerData.managedBranches) ? managerData.managedBranches : [];
                 
-                if (managedBranches.includes(finalBranchCode)) {
-                    console.log(`✅ Found manager ${managerData.uid} (branch: ${managerData.branch}) who manages branch ${finalBranchCode}`);
+                // Normalize all managed branches for comparison (they are branch names)
+                const normalizedManagedBranches = managedBranches.map(b => normalizeBranchCode(b)).filter(Boolean);
+                
+                // Check if this manager manages the employee's branch
+                // Compare against both branch code AND branch name (case-insensitive)
+                const matchesBranchCode = finalBranchCode && normalizedManagedBranches.includes(finalBranchCode);
+                const matchesBranchName = finalBranchName && normalizedManagedBranches.includes(finalBranchName);
+                const isMatch = matchesBranchCode || matchesBranchName;
+                
+                console.log(`🔍 Checking manager ${managerData.uid} (branch: ${managerData.branch}):`);
+                console.log(`   managedBranches = [${managedBranches.join(', ')}]`);
+                console.log(`   normalized = [${normalizedManagedBranches.join(', ')}]`);
+                console.log(`   employee branch code: "${finalBranchCode}" → matches: ${matchesBranchCode}`);
+                console.log(`   employee branch name: "${finalBranchName || 'N/A'}" → matches: ${matchesBranchName}`);
+                
+                if (isMatch) {
+                    console.log(`✅ Found manager ${managerData.uid} (branch: ${managerData.branch}) who manages this branch`);
                     ids.push(managerData.uid);
                     foundViaManagedBranches++;
+                } else {
+                    console.log(`❌ Manager ${managerData.uid} does NOT manage this branch`);
                 }
             });
 
             // Step 2: Find managers in the same branch as the employee
             // This handles cases where the branch has its own manager
+            // Use original branch code for Firestore query (case-sensitive)
             const sameBranchManagerQuery = await employeesRef
-                .where("branch", "==", finalBranchCode)
+                .where("branch", "==", originalBranchCode)
                 .where("positionName", "==", "Manager")
                 .get();
             
@@ -1171,7 +1216,7 @@ const createLeaveRequest = async (req, res) => {
                     toDate: notificationToDate
                 });
                 
-                const approverIds = await findApproverIdsByLevel(firstApprover, employeeId, finalBranch);
+                const approverIds = await findApproverIdsByLevel(firstApprover, employeeId, finalBranch, finalBranchName);
                 console.log(`📨 [NOTIFICATION] Found ${approverIds.length} approver(s) for level "${firstApprover}"`);
                 
                 if (approverIds.length > 0) {
@@ -1768,16 +1813,32 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
         // Filter by manager's managed branches and employee position (if manager level)
         let leaveRequests = allLeaveRequests;
         if (level === "manager" && managedBranches.length > 0) {
+            // Normalize managed branches for comparison
+            const normalizedManagedBranches = managedBranches.map(b => normalizeBranchCode(b)).filter(Boolean);
+            console.log(`🔍 Manager filtering: normalized managedBranches = [${normalizedManagedBranches.join(', ')}]`);
+            
             leaveRequests = allLeaveRequests.filter(request => {
+                // Normalize request branch code and branch name for comparison
+                const normalizedRequestBranchCode = normalizeBranchCode(request.branchCode);
+                const normalizedRequestBranchName = normalizeBranchCode(request.branchName);
+                
                 // Check if request is from manager's managed branches
-                const fromManagedBranch = managedBranches.includes(request.branchCode);
+                // managedBranches contains branch NAMES, so compare against both code and name
+                const matchesBranchCode = normalizedRequestBranchCode && normalizedManagedBranches.includes(normalizedRequestBranchCode);
+                const matchesBranchName = normalizedRequestBranchName && normalizedManagedBranches.includes(normalizedRequestBranchName);
+                const fromManagedBranch = matchesBranchCode || matchesBranchName;
                 
                 // Managers can approve requests from Salesman and Programmer (positions that require manager approval)
                 const requiresManagerApproval = request.positionName === "Salesman" || request.positionName === "Programmer";
                 
+                console.log(`🔍 Request from branch code "${request.branchCode}" (normalized: "${normalizedRequestBranchCode}"), branch name "${request.branchName || 'N/A'}" (normalized: "${normalizedRequestBranchName || 'N/A'}"), position: "${request.positionName}"`);
+                console.log(`   → matchesBranchCode: ${matchesBranchCode}, matchesBranchName: ${matchesBranchName}, fromManagedBranch: ${fromManagedBranch}, requiresManagerApproval: ${requiresManagerApproval}`);
+                
                 // Manager can see requests from their managed branches AND from positions that require manager approval
                 return fromManagedBranch && requiresManagerApproval;
             });
+            
+            console.log(`📊 Filtered to ${leaveRequests.length} leave request(s) from managed branches`);
         }
         
         // Also support manual branch filtering (optional) - ONLY for managers
@@ -2276,7 +2337,7 @@ const approveLeaveRequest = async (req, res) => {
         if (action === 'approve' && nextApprover) {
             try {
                 console.log(`📨 NEW CODE PATH: Finding approvers for level "${nextApprover}" for employee ${leaveData.employeeId}`);
-                const approverIds = await findApproverIdsByLevel(nextApprover, leaveData.employeeId, leaveData.branch);
+                const approverIds = await findApproverIdsByLevel(nextApprover, leaveData.employeeId, leaveData.branch, leaveData.branchName);
                 console.log(`📨 Found ${approverIds.length} approver(s):`, approverIds);
                 
                 if (approverIds && approverIds.length > 0) {
