@@ -1621,6 +1621,12 @@ const getEmployeeShiftCalendar = async (req, res) => {
         const positionName = employeeData.positionName;
         const isSalesmanOrManager = positionName === "Salesman" || positionName === "Manager";
         const isProgrammer = positionName === "Programmer";
+        
+        // Check if position is Security or Driver (overnight workers, no weekend holidays)
+        const overnightPositions = ['Driver', 'driver', 'Security', 'security', 'Security Guard', 'security guard'];
+        const isSecurityOrDriver = overnightPositions.some(pos => 
+            positionName && positionName.toLowerCase().includes(pos.toLowerCase())
+        );
 
         // Determine date range (default to current month if not provided)
         const today = new Date();
@@ -1655,7 +1661,10 @@ const getEmployeeShiftCalendar = async (req, res) => {
 
         // Determine holidays based on position
         const isHoliday = (dayOfWeek) => {
-            if (isProgrammer) {
+            if (isSecurityOrDriver) {
+                // Security and Driver: No holidays (work on weekends)
+                return false;
+            } else if (isProgrammer) {
                 // Programmer: Saturday and Sunday are holidays
                 return dayOfWeek === 'saturday' || dayOfWeek === 'sunday';
             } else {
