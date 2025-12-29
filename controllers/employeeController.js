@@ -1847,6 +1847,9 @@ const getEmployeeShiftCalendar = async (req, res) => {
                         attendanceStatus: attendanceStatus,
                         checkInAt: attendance?.checkInAt || null,
                         checkOutAt: attendance?.checkOutAt || null,
+                        checkInLocation: attendance?.checkInLocation || null,
+                        checkOutLocation: attendance?.checkOutLocation || null,
+                        status: attendance?.status || null,
                         isLeave: leave ? true : false,
                         leave: leave ? {
                             leaveType: leave.leaveType,
@@ -1873,6 +1876,9 @@ const getEmployeeShiftCalendar = async (req, res) => {
                         attendanceStatus: attendanceStatus,
                         checkInAt: attendance?.checkInAt || null,
                         checkOutAt: attendance?.checkOutAt || null,
+                        checkInLocation: attendance?.checkInLocation || null,
+                        checkOutLocation: attendance?.checkOutLocation || null,
+                        status: attendance?.status || null,
                         isLeave: leave ? true : false,
                         leave: leave ? {
                             leaveType: leave.leaveType,
@@ -1959,6 +1965,9 @@ const getEmployeeShiftCalendar = async (req, res) => {
                         attendanceStatus: attendanceStatus,
                         checkInAt: attendance?.checkInAt || null,
                         checkOutAt: attendance?.checkOutAt || null,
+                        checkInLocation: attendance?.checkInLocation || null,
+                        checkOutLocation: attendance?.checkOutLocation || null,
+                        status: attendance?.status || null,
                         isLeave: leave ? true : false,
                         leave: leave ? {
                             leaveType: leave.leaveType,
@@ -1986,6 +1995,9 @@ const getEmployeeShiftCalendar = async (req, res) => {
                         attendanceStatus: attendanceStatus,
                         checkInAt: attendance?.checkInAt || null,
                         checkOutAt: attendance?.checkOutAt || null,
+                        checkInLocation: attendance?.checkInLocation || null,
+                        checkOutLocation: attendance?.checkOutLocation || null,
+                        status: attendance?.status || null,
                         isLeave: leave ? true : false,
                         leave: leave ? {
                             leaveType: leave.leaveType,
@@ -2012,6 +2024,9 @@ const getEmployeeShiftCalendar = async (req, res) => {
                         attendanceStatus: attendanceStatus,
                         checkInAt: attendance?.checkInAt || null,
                         checkOutAt: attendance?.checkOutAt || null,
+                        checkInLocation: attendance?.checkInLocation || null,
+                        checkOutLocation: attendance?.checkOutLocation || null,
+                        status: attendance?.status || null,
                         isLeave: leave ? true : false,
                         leave: leave ? {
                             leaveType: leave.leaveType,
