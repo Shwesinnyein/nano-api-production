@@ -1806,7 +1806,19 @@ const getEmployeeShiftCalendar = async (req, res) => {
                 const shift = shiftMap.get(date);
                 const attendance = attendanceMap.get(date);
                 const leave = leaveMap.get(date);
-                const holiday = isHoliday(dayOfWeek);
+                
+                // For Salesman/Manager: Check shift-data for holiday status
+                // If shift exists and isHoliday is false, don't treat as holiday
+                // If shift exists and isHoliday is true, treat as holiday
+                // If no shift exists, use default holiday logic (Sunday is holiday)
+                let holiday = false;
+                if (shift) {
+                    // Shift exists - use isHoliday from shift-data
+                    holiday = shift.isHoliday === true || shift.isHoliday === "true";
+                } else {
+                    // No shift - use default holiday logic (Sunday is holiday)
+                    holiday = isHoliday(dayOfWeek);
+                }
                 
                 // Determine attendance status
                 let attendanceStatus = "not_scanned";
@@ -1839,7 +1851,7 @@ const getEmployeeShiftCalendar = async (req, res) => {
                     shiftCalendar.push({
                         date: date,
                         dayOfWeek: dayOfWeek,
-                        isHoliday: shift.isHoliday === true || shift.isHoliday === "true" || holiday,
+                        isHoliday: holiday,
                         startTime: shift.startTime || null,
                         endTime: shift.endTime || null,
                         shiftName: shift.shiftName || null,
