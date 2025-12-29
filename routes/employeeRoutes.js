@@ -20,6 +20,7 @@ router.get("/search", employeeController.searchEmployees);
 router.get("/filter-options", employeeController.getEmployeeFilterOptions);
 router.get("/shift-data/filter", authenticateToken, employeeController.getShiftDataWithFilter);
 router.get("/shift/get-by-date", employeeController.getEmployeeShiftByDate);
+router.get("/:employeeId/shift-calendar", employeeController.getEmployeeShiftCalendar);
 
 // Parameterized routes (must come after specific routes)
 router.get("/profile/:uid", employeeController.getProfileByUid);

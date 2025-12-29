@@ -1590,6 +1590,466 @@ const getEmployeeShiftByDate = async (req, res) => {
     }
 };
 
+// Get employee shift calendar with working days and holidays
+const getEmployeeShiftCalendar = async (req, res) => {
+    try {
+        const { employeeId } = req.params;
+        const { fromDate, toDate } = req.query;
+        
+        console.log("Get employee shift calendar called", { employeeId, fromDate, toDate });
+        
+        if (!employeeId) {
+            return res.status(400).json({
+                success: false,
+                message: "Employee ID is required"
+            });
+        }
+
+        // Get employee data
+        const employeesRef = db.collection("employees");
+        const employeeQuery = await employeesRef.where("uid", "==", employeeId).get();
+
+        if (employeeQuery.empty) {
+            return res.status(404).json({
+                success: false,
+                message: "Employee not found"
+            });
+        }
+
+        const employeeDoc = employeeQuery.docs[0];
+        const employeeData = employeeDoc.data();
+        const positionName = employeeData.positionName;
+        const isSalesmanOrManager = positionName === "Salesman" || positionName === "Manager";
+        const isProgrammer = positionName === "Programmer";
+
+        // Determine date range (default to current month if not provided)
+        const today = new Date();
+        let startDate = fromDate ? new Date(fromDate) : new Date(today.getFullYear(), today.getMonth(), 1);
+        let endDate = toDate ? new Date(toDate) : new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        // Ensure dates are valid
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid date format. Use YYYY-MM-DD"
+            });
+        }
+
+        // Normalize dates to start of day
+        startDate.setHours(0, 0, 0, 0);
+        endDate.setHours(23, 59, 59, 999);
+
+        // Generate array of all dates in range
+        const dates = [];
+        const currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+            const dateString = currentDate.toISOString().split('T')[0]; // YYYY-MM-DD
+            const dayOfWeek = getDayOfWeek(dateString);
+            dates.push({
+                date: dateString,
+                dayOfWeek: dayOfWeek,
+                dayName: dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)
+            });
+            currentDate.setDate(currentDate.getDate() + 1);
+        }
+
+        // Determine holidays based on position
+        const isHoliday = (dayOfWeek) => {
+            if (isProgrammer) {
+                // Programmer: Saturday and Sunday are holidays
+                return dayOfWeek === 'saturday' || dayOfWeek === 'sunday';
+            } else {
+                // Other positions: Sunday is holiday
+                return dayOfWeek === 'sunday';
+            }
+        };
+
+        // Get attendance data for all dates in range
+        const dateStrings = dates.map(d => d.date);
+        const attendanceRef = db.collection("employee-attendance");
+        
+        // Fetch attendance records in batches (Firestore 'in' limit is 10)
+        const attendancePromises = [];
+        for (let i = 0; i < dateStrings.length; i += 10) {
+            const batch = dateStrings.slice(i, i + 10);
+            attendancePromises.push(
+                attendanceRef
+                    .where("employeeId", "==", employeeId)
+                    .where("date", "in", batch)
+                    .get()
+            );
+        }
+        
+        const attendanceSnapshots = await Promise.all(attendancePromises);
+        const attendanceMap = new Map();
+        
+        attendanceSnapshots.forEach(snapshot => {
+            snapshot.forEach(doc => {
+                const attendanceData = doc.data();
+                const attendanceDate = attendanceData.date || attendanceData.checkInDate;
+                if (attendanceDate && dateStrings.includes(attendanceDate)) {
+                    attendanceMap.set(attendanceDate, {
+                        id: doc.id,
+                        ...attendanceData
+                    });
+                }
+            });
+        });
+
+        // Get leave requests for this employee in the date range
+        const leaveRef = db.collection("employee-leave");
+        const leaveQuery = leaveRef
+            .where("employeeId", "==", employeeId)
+            .where("status", "in", ["pending", "approved", "approved_team_lead", "approved_manager", "approved_warehouse_manager", "approved_hr"]);
+        
+        const leaveSnapshot = await leaveQuery.get();
+        const leaveMap = new Map(); // Map date string to leave data
+        
+        leaveSnapshot.forEach(doc => {
+            const leaveData = doc.data();
+            const requestType = leaveData.requestType || 'daily';
+            
+            if (requestType === 'daily') {
+                // Daily leave: check if date falls within fromDate and toDate
+                const fromDate = leaveData.fromDate;
+                const toDate = leaveData.toDate;
+                
+                if (fromDate && toDate) {
+                    dateStrings.forEach(dateStr => {
+                        if (dateStr >= fromDate && dateStr <= toDate) {
+                            // Check if this date already has a leave (prefer approved over pending)
+                            if (!leaveMap.has(dateStr) || 
+                                (leaveData.status === 'approved' && leaveMap.get(dateStr).status !== 'approved')) {
+                                leaveMap.set(dateStr, {
+                                    id: doc.id,
+                                    leaveType: leaveData.leaveType,
+                                    leaveTypeName: leaveData.leaveTypeName,
+                                    leaveTypeNameEng: leaveData.leaveTypeNameEng,
+                                    status: leaveData.status,
+                                    statusName: leaveData.statusName,
+                                    requestType: 'daily',
+                                    isHalfDay: leaveData.isHalfDay || false,
+                                    halfDayType: leaveData.halfDayType || null,
+                                    fromDate: fromDate,
+                                    toDate: toDate
+                                });
+                            }
+                        }
+                    });
+                }
+            } else if (requestType === 'hourly') {
+                // Hourly leave: check if date matches
+                const leaveDate = leaveData.date;
+                if (leaveDate && dateStrings.includes(leaveDate)) {
+                    // Check if this date already has a leave (prefer approved over pending)
+                    if (!leaveMap.has(leaveDate) || 
+                        (leaveData.status === 'approved' && leaveMap.get(leaveDate).status !== 'approved')) {
+                        leaveMap.set(leaveDate, {
+                            id: doc.id,
+                            leaveType: leaveData.leaveType,
+                            leaveTypeName: leaveData.leaveTypeName,
+                            leaveTypeNameEng: leaveData.leaveTypeNameEng,
+                            status: leaveData.status,
+                            statusName: leaveData.statusName,
+                            requestType: 'hourly',
+                            date: leaveDate,
+                            startTime: leaveData.startTime || null,
+                            endTime: leaveData.endTime || null,
+                            workingShift: leaveData.workingShift || leaveData.shiftName || null
+                        });
+                    }
+                }
+            }
+        });
+
+        // Get shift data based on employee type
+        let shiftCalendar = [];
+
+        if (isSalesmanOrManager) {
+            // For Salesman/Manager: Get shift data by employeeId and assignDate
+            console.log(`🔍 Fetching date-specific shifts for ${positionName}`);
+            
+            const shiftDataRef = db.collection("shift-data");
+            
+            // Query all shifts for this employee in the date range
+            // Note: Firestore 'in' query limit is 10, so we may need to batch
+            const shiftPromises = [];
+            for (let i = 0; i < dateStrings.length; i += 10) {
+                const batch = dateStrings.slice(i, i + 10);
+                const dateWithSpace = batch.map(d => d + " ");
+                shiftPromises.push(
+                    shiftDataRef
+                        .where("employeeId", "==", employeeId)
+                        .where("assignDate", "in", [...batch, ...dateWithSpace])
+                        .get()
+                );
+            }
+            
+            const shiftSnapshots = await Promise.all(shiftPromises);
+            const shiftMap = new Map();
+            
+            shiftSnapshots.forEach(snapshot => {
+                snapshot.forEach(doc => {
+                    const shiftData = doc.data();
+                    const assignDate = shiftData.assignDate ? shiftData.assignDate.trim() : null;
+                    if (assignDate && dateStrings.includes(assignDate)) {
+                        shiftMap.set(assignDate, {
+                            id: doc.id,
+                            ...shiftData
+                        });
+                    }
+                });
+            });
+
+            // Build calendar for each date
+            dates.forEach(({ date, dayOfWeek }) => {
+                const shift = shiftMap.get(date);
+                const attendance = attendanceMap.get(date);
+                const leave = leaveMap.get(date);
+                const holiday = isHoliday(dayOfWeek);
+                
+                // Determine attendance status
+                let attendanceStatus = "not_scanned";
+                if (attendance) {
+                    if (attendance.checkOutAt || attendance.checkOutDate) {
+                        attendanceStatus = "checked_out";
+                    } else if (attendance.checkInAt || attendance.checkInDate) {
+                        attendanceStatus = "checked_in";
+                    }
+                }
+                
+                // Determine calendar status for color coding
+                let calendarStatus = "no_shift";
+                if (holiday) {
+                    calendarStatus = "holiday";
+                } else if (leave) {
+                    calendarStatus = "on_leave"; // Leave status
+                } else if (shift) {
+                    if (attendanceStatus === "checked_out") {
+                        calendarStatus = "completed"; // Green
+                    } else if (attendanceStatus === "checked_in") {
+                        calendarStatus = "in_progress"; // Yellow
+                    } else if (attendanceStatus === "not_scanned") {
+                        calendarStatus = "pending"; // Red or Grey
+                    }
+                }
+                
+                if (shift) {
+                    // Shift assigned for this date
+                    shiftCalendar.push({
+                        date: date,
+                        dayOfWeek: dayOfWeek,
+                        isHoliday: shift.isHoliday === true || shift.isHoliday === "true" || holiday,
+                        startTime: shift.startTime || null,
+                        endTime: shift.endTime || null,
+                        shiftName: shift.shiftName || null,
+                        location: shift.location || attendance?.currentLocation || attendance?.location || null,
+                        attendanceStatus: attendanceStatus,
+                        checkInAt: attendance?.checkInAt || null,
+                        checkOutAt: attendance?.checkOutAt || null,
+                        isLeave: leave ? true : false,
+                        leave: leave ? {
+                            leaveType: leave.leaveType,
+                            leaveTypeName: leave.leaveTypeName,
+                            leaveTypeNameEng: leave.leaveTypeNameEng,
+                            status: leave.status,
+                            statusName: leave.statusName,
+                            requestType: leave.requestType,
+                            isHalfDay: leave.isHalfDay || false,
+                            halfDayType: leave.halfDayType || null
+                        } : null,
+                        calendarStatus: calendarStatus
+                    });
+                } else {
+                    // No shift assigned
+                    shiftCalendar.push({
+                        date: date,
+                        dayOfWeek: dayOfWeek,
+                        isHoliday: holiday,
+                        startTime: null,
+                        endTime: null,
+                        shiftName: null,
+                        location: attendance?.currentLocation || attendance?.location || null,
+                        attendanceStatus: attendanceStatus,
+                        checkInAt: attendance?.checkInAt || null,
+                        checkOutAt: attendance?.checkOutAt || null,
+                        isLeave: leave ? true : false,
+                        leave: leave ? {
+                            leaveType: leave.leaveType,
+                            leaveTypeName: leave.leaveTypeName,
+                            leaveTypeNameEng: leave.leaveTypeNameEng,
+                            status: leave.status,
+                            statusName: leave.statusName,
+                            requestType: leave.requestType,
+                            isHalfDay: leave.isHalfDay || false,
+                            halfDayType: leave.halfDayType || null
+                        } : null,
+                        calendarStatus: calendarStatus
+                    });
+                }
+            });
+
+        } else {
+            // For position-based employees: Get shift data by positionName and workingDays
+            console.log(`🔍 Fetching position-based shifts for ${positionName}`);
+            
+            const shiftDataRef = db.collection("shift-data");
+            const shiftQuery = shiftDataRef.where("positionName", "==", positionName);
+            const shiftSnapshot = await shiftQuery.get();
+            
+            // Build map of shifts by working days
+            const shiftsByDay = new Map();
+            shiftSnapshot.forEach(doc => {
+                const shiftData = doc.data();
+                const workingDays = shiftData.workingDays || [];
+                workingDays.forEach(day => {
+                    if (!shiftsByDay.has(day)) {
+                        shiftsByDay.set(day, []);
+                    }
+                    shiftsByDay.get(day).push({
+                        id: doc.id,
+                        ...shiftData
+                    });
+                });
+            });
+
+            // Build calendar for each date
+            dates.forEach(({ date, dayOfWeek }) => {
+                const holiday = isHoliday(dayOfWeek);
+                const shiftsForDay = shiftsByDay.get(dayOfWeek) || [];
+                const attendance = attendanceMap.get(date);
+                const leave = leaveMap.get(date);
+                
+                // Determine attendance status
+                let attendanceStatus = "not_scanned";
+                if (attendance) {
+                    if (attendance.checkOutAt || attendance.checkOutDate) {
+                        attendanceStatus = "checked_out";
+                    } else if (attendance.checkInAt || attendance.checkInDate) {
+                        attendanceStatus = "checked_in";
+                    }
+                }
+                
+                // Determine calendar status for color coding
+                let calendarStatus = "no_shift";
+                if (holiday) {
+                    calendarStatus = "holiday";
+                } else if (leave) {
+                    calendarStatus = "on_leave"; // Leave status
+                } else if (shiftsForDay.length > 0) {
+                    if (attendanceStatus === "checked_out") {
+                        calendarStatus = "completed"; // Green
+                    } else if (attendanceStatus === "checked_in") {
+                        calendarStatus = "in_progress"; // Yellow
+                    } else if (attendanceStatus === "not_scanned") {
+                        calendarStatus = "pending"; // Red or Grey
+                    }
+                }
+                
+                if (holiday) {
+                    // Holiday - no shift
+                    shiftCalendar.push({
+                        date: date,
+                        dayOfWeek: dayOfWeek,
+                        isHoliday: true,
+                        startTime: null,
+                        endTime: null,
+                        shiftName: null,
+                        location: attendance?.currentLocation || attendance?.location || null,
+                        attendanceStatus: attendanceStatus,
+                        checkInAt: attendance?.checkInAt || null,
+                        checkOutAt: attendance?.checkOutAt || null,
+                        isLeave: leave ? true : false,
+                        leave: leave ? {
+                            leaveType: leave.leaveType,
+                            leaveTypeName: leave.leaveTypeName,
+                            leaveTypeNameEng: leave.leaveTypeNameEng,
+                            status: leave.status,
+                            statusName: leave.statusName,
+                            requestType: leave.requestType,
+                            isHalfDay: leave.isHalfDay || false,
+                            halfDayType: leave.halfDayType || null
+                        } : null,
+                        calendarStatus: calendarStatus
+                    });
+                } else if (shiftsForDay.length > 0) {
+                    // Working day with shift - return first shift
+                    const primaryShift = shiftsForDay[0];
+                    shiftCalendar.push({
+                        date: date,
+                        dayOfWeek: dayOfWeek,
+                        isHoliday: false,
+                        startTime: primaryShift.startTime || null,
+                        endTime: primaryShift.endTime || null,
+                        shiftName: primaryShift.shiftName || null,
+                        location: primaryShift.location || attendance?.currentLocation || attendance?.location || null,
+                        attendanceStatus: attendanceStatus,
+                        checkInAt: attendance?.checkInAt || null,
+                        checkOutAt: attendance?.checkOutAt || null,
+                        isLeave: leave ? true : false,
+                        leave: leave ? {
+                            leaveType: leave.leaveType,
+                            leaveTypeName: leave.leaveTypeName,
+                            leaveTypeNameEng: leave.leaveTypeNameEng,
+                            status: leave.status,
+                            statusName: leave.statusName,
+                            requestType: leave.requestType,
+                            isHalfDay: leave.isHalfDay || false,
+                            halfDayType: leave.halfDayType || null
+                        } : null,
+                        calendarStatus: calendarStatus
+                    });
+                } else {
+                    // Working day but no shift assigned
+                    shiftCalendar.push({
+                        date: date,
+                        dayOfWeek: dayOfWeek,
+                        isHoliday: false,
+                        startTime: null,
+                        endTime: null,
+                        shiftName: null,
+                        location: attendance?.currentLocation || attendance?.location || null,
+                        attendanceStatus: attendanceStatus,
+                        checkInAt: attendance?.checkInAt || null,
+                        checkOutAt: attendance?.checkOutAt || null,
+                        isLeave: leave ? true : false,
+                        leave: leave ? {
+                            leaveType: leave.leaveType,
+                            leaveTypeName: leave.leaveTypeName,
+                            leaveTypeNameEng: leave.leaveTypeNameEng,
+                            status: leave.status,
+                            statusName: leave.statusName,
+                            requestType: leave.requestType,
+                            isHalfDay: leave.isHalfDay || false,
+                            halfDayType: leave.halfDayType || null
+                        } : null,
+                        calendarStatus: calendarStatus
+                    });
+                }
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Shift calendar retrieved successfully",
+            employeeId: employeeId,
+            employeeName: `${employeeData.firstName || ''} ${employeeData.lastName || ''}`.trim(),
+            positionName: positionName,
+            fromDate: startDate.toISOString().split('T')[0],
+            toDate: endDate.toISOString().split('T')[0],
+            calendar: shiftCalendar
+        });
+
+    } catch (error) {
+        console.error("❌ Error getting employee shift calendar:", error);
+        res.status(500).json({
+            success: false,
+            message: "Internal server error",
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     login,
     register,
@@ -1607,5 +2067,6 @@ module.exports = {
     getEmployeeListInternal,
     getEmployeeWithShiftData,
     getShiftDataWithFilter,
-    getEmployeeShiftByDate
+    getEmployeeShiftByDate,
+    getEmployeeShiftCalendar
 };
