@@ -1856,6 +1856,7 @@ const getLeaveRequestsByApprovalLevel = async (req, res) => {
                 totalHours: leaveData.totalHours || 0,
                 totalDays: leaveData.totalDays || 0,
                 reason: leaveData.reason,
+                attachment: leaveData.attachment || null,
                 status: leaveData.status,
                 statusName: leaveData.statusName,
                 currentApprover: leaveData.currentApprover,
