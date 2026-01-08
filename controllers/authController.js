@@ -413,76 +413,84 @@ exports.loginWithEmailPassword = async (req, res) => {
             });
         }
 
-        // Check if employee exists with this email
-        const employeesRef = db.collection("employees");
-        const querySnapshot = await employeesRef.where("email", "==", email).get();
+        // Check if employee exists with this email (using helper function that handles nested emails)
+        const employeeDoc = await findEmployeeByEmail(email);
         
-        if (querySnapshot.empty) {
+        if (!employeeDoc) {
             // Employee doesn't exist - Show HR contact message
             console.log(`Employee not found with email: ${email} - Contact HR required`);
             return res.status(404).json({ 
                 success: false,
-                message: "Your email address was not found in system, please contact to your HR" 
+                message: "Your email address was not found in system, please contact to your HR",
+                messageTh: "ไม่พบอีเมลของคุณในระบบ กรุณาติดต่อ HR"
             });
-
-        } else {
-            // Employee exists - LOGIN FLOW
-            const employeeDoc = querySnapshot.docs[0];
-            const employeeData = employeeDoc.data();
-
-            // Check if employee has a password set
-            if (!employeeData.password) {
-                // Employee exists but no password - need to register
-                console.log(`Employee ${email} exists but no password set - need to register`);
-                return res.status(400).json({ 
-                    success: false,
-                    message: "You need to register first" 
-                });
-
-            } else {
-                // Employee has password - verify it
-                if (employeeData.password !== password) {
-                    return res.status(401).json({ 
-                        success: false,
-                        message: "Invalid password" 
-                    });
-                }
-
-                // Password matches - successful login
-                console.log(`Successful login for employee: ${email}`);
-
-                res.json({
-                    success: true,
-                    message: "Login successful",
-                    isRegistration: false,
-                    employee: {
-                        id: employeeDoc.id,
-                        authId: employeeData.authId,
-                        nickname: employeeData.nickname,
-                        firstName: employeeData.firstName,
-                        lastName: employeeData.lastName,
-                        email: employeeData.email,
-                        primaryNumber: employeeData.primary_number,
-                        companyName: employeeData.companyName,
-                        locationName: employeeData.locationName,
-                        branchName: employeeData.branchName,
-                        positionName: employeeData.positionName,
-                        status: employeeData.status,
-                        role: employeeData.role,
-                        profileImage: employeeData.profileImage,
-                        has2FA: !!employeeData.secret,
-                        joinDate: employeeData.joinDate,
-                        maritalStatus: employeeData.maritalStatus,
-                        dateOfBirth: employeeData.dateOfBirth,
-                        gender: employeeData.gender,
-                        salary: employeeData.salary,
-                        department: employeeData.department,
-                        createdAt: employeeData.createdAt,
-                        updatedAt: employeeData.updatedAt
-                    }
-                });
-            }
         }
+
+        // Employee exists - LOGIN FLOW
+        const employeeData = employeeDoc.data();
+
+        // Check if employee status is resigned
+        if (employeeData.status && employeeData.status.toLowerCase() === 'resigned') {
+            return res.status(403).json({ 
+                success: false,
+                message: "Your account has been resigned. Please contact HR for assistance.",
+                messageTh: "คุณไม่สามารถเข้าสู่ระบบได้ เนื่องจากคุณได้ลาออกแล้ว หากต้องการเข้าสู่ระบบ โปรดติดต่อฝ่ายทรัพยากรบุคคล"
+            });
+        }
+
+        // Check if employee has a password set
+        if (!employeeData.password) {
+            // Employee exists but no password - need to register
+            console.log(`Employee ${email} exists but no password set - need to register`);
+            return res.status(400).json({ 
+                success: false,
+                message: "You need to register first" 
+            });
+        }
+
+        // Employee has password - verify it
+        if (employeeData.password !== password) {
+            return res.status(401).json({ 
+                success: false,
+                message: "Invalid password",
+                messageTh: "รหัสผ่านไม่ถูกต้อง"
+            });
+        }
+
+        // Password matches - successful login
+        console.log(`Successful login for employee: ${email}`);
+
+        res.json({
+            success: true,
+            message: "Login successful",
+            messageTh: "เข้าสู่ระบบสำเร็จ",
+            isRegistration: false,
+            employee: {
+                id: employeeDoc.id,
+                authId: employeeData.authId,
+                nickname: employeeData.nickname,
+                firstName: employeeData.firstName,
+                lastName: employeeData.lastName,
+                email: employeeData.email,
+                primaryNumber: employeeData.primary_number,
+                companyName: employeeData.companyName,
+                locationName: employeeData.locationName,
+                branchName: employeeData.branchName,
+                positionName: employeeData.positionName,
+                status: employeeData.status,
+                role: employeeData.role,
+                profileImage: employeeData.profileImage,
+                has2FA: !!employeeData.secret,
+                joinDate: employeeData.joinDate,
+                maritalStatus: employeeData.maritalStatus,
+                dateOfBirth: employeeData.dateOfBirth,
+                gender: employeeData.gender,
+                salary: employeeData.salary,
+                department: employeeData.department,
+                createdAt: employeeData.createdAt,
+                updatedAt: employeeData.updatedAt
+            }
+        });
 
     } catch (error) {
         console.error("❌ Error in loginWithEmailPassword:", error);
@@ -934,6 +942,15 @@ exports.mobileLogin = async (req, res) => {
 
         const employeeData = employeeDoc.data();
 
+        // ✅ STEP 2.5: Check if employee status is resigned
+        if (employeeData.status && employeeData.status.toLowerCase() === 'resigned') {
+            return res.status(403).json({ 
+                success: false,
+                message: "Your account has been resigned. Please contact HR for assistance.",
+                messageTh: "บัญชีของคุณถูกยกเลิกแล้ว กรุณาติดต่อ HR เพื่อขอความช่วยเหลือ"
+            });
+        }
+
         // ✅ STEP 3: Update employee document with authId if not set
         if (!employeeData.authId) {
             await employeeDoc.ref.update({
@@ -1151,23 +1168,33 @@ exports.changePassword = async (req, res) => {
     }
 };
 
-// Helper function to find employee by email (handles nested documents.email)
+// Helper function to find employee by email (handles nested documents.email and case-insensitive matching)
 const findEmployeeByEmail = async (email) => {
-    const employeesRef = db.collection("employees");
+    if (!email) return null;
     
-    // Try root level email first
+    const employeesRef = db.collection("employees");
+    const emailLower = email.toLowerCase().trim();
+    
+    // Try root level email first (case-sensitive for exact match)
     let querySnapshot = await employeesRef.where("email", "==", email).get();
     
     if (!querySnapshot.empty) {
         return querySnapshot.docs[0];
     }
     
-    // If not found, try nested documents.email
+    // If not found, try case-insensitive matching and nested documents.email
     const allEmployees = await employeesRef.get();
     for (const doc of allEmployees.docs) {
         const data = doc.data();
-        if (data.documents && data.documents.email === email) {
+        // Check root level email (case-insensitive)
+        if (data.email && data.email.toLowerCase().trim() === emailLower) {
             return doc;
+        }
+        // Check nested documents.email (case-insensitive)
+        if (data.documents && data.documents.email) {
+            if (data.documents.email.toLowerCase().trim() === emailLower) {
+                return doc;
+            }
         }
     }
     
