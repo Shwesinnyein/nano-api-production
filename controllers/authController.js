@@ -1001,7 +1001,7 @@ exports.mobileLogin = async (req, res) => {
             positionName: employeeData.positionName
         };
         
-        const jwtToken = jwt.sign(jwtPayload, jwtSecret, { expiresIn: '360d' });
+        const jwtToken = jwt.sign(jwtPayload, jwtSecret, { expiresIn: '3650d' }); // 10 years (10 * 365 days)
 
         res.json({
             success: true,
