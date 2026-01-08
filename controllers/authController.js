@@ -892,9 +892,9 @@ exports.verifyToken = async (req, res) => {
 exports.mobileLogin = async (req, res) => {
     console.log("Mobile login called");
     try {
-        const { email, password } = req.body; // Password is optional (already verified by Firebase Auth)
+        const { email, password } = req.body;
         
-        // Validation - only email is required
+        // Validation
         if (!email) {
             return res.status(400).json({ 
                 success: false,
@@ -903,8 +903,48 @@ exports.mobileLogin = async (req, res) => {
             });
         }
 
-        // ✅ STEP 1: Verify user exists in Firebase Authentication
-        // (Password was already verified by Firebase Auth SDK on client-side)
+        if (!password) {
+            return res.status(400).json({ 
+                success: false,
+                message: "Password is required",
+                messageTh: "กรุณากรอกรหัสผ่าน"
+            });
+        }
+
+        // ✅ STEP 1: Verify email exists in employee table first
+        const employeeDoc = await findEmployeeByEmail(email);
+        
+        if (!employeeDoc) {
+            return res.status(404).json({ 
+                success: false,
+                message: "Employee not found in system. Please contact HR.",
+                messageTh: "ไม่พบข้อมูลพนักงานในระบบ กรุณาติดต่อ HR"
+            });
+        }
+
+        const employeeData = employeeDoc.data();
+
+        // ✅ STEP 2: Verify password
+        if (!employeeData.password) {
+            return res.status(400).json({ 
+                success: false,
+                message: "You need to register first",
+                messageTh: "กรุณาลงทะเบียนก่อน"
+            });
+        }
+
+        if (employeeData.password !== password) {
+            console.log(`❌ Invalid password for email: ${email}`);
+            return res.status(401).json({ 
+                success: false,
+                message: "Invalid password",
+                messageTh: "รหัสผ่านไม่ถูกต้อง"
+            });
+        }
+
+        console.log(`✅ Password verified for email: ${email}`);
+
+        // ✅ STEP 3: Verify user exists in Firebase Authentication
         let firebaseUser = null;
         try {
             firebaseUser = await admin.auth().getUserByEmail(email);
@@ -928,19 +968,6 @@ exports.mobileLogin = async (req, res) => {
                 });
             }
         }
-
-        // ✅ STEP 2: Verify email exists in employee table
-        const employeeDoc = await findEmployeeByEmail(email);
-        
-        if (!employeeDoc) {
-            return res.status(404).json({ 
-                success: false,
-                message: "Employee not found in system. Please contact HR.",
-                messageTh: "ไม่พบข้อมูลพนักงานในระบบ กรุณาติดต่อ HR"
-            });
-        }
-
-        const employeeData = employeeDoc.data();
 
         // ✅ STEP 2.5: Check if employee status is resigned
         if (employeeData.status && employeeData.status.toLowerCase() === 'resigned') {
