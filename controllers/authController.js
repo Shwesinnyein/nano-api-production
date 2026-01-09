@@ -414,20 +414,24 @@ exports.loginWithEmailPassword = async (req, res) => {
         }
 
         // Check if employee exists with this email (using helper function that handles nested emails)
+        console.log(`🔍 Looking up employee with email: ${email}`);
         const employeeDoc = await findEmployeeByEmail(email);
         
         if (!employeeDoc) {
-            // Employee doesn't exist - Show HR contact message
-            console.log(`Employee not found with email: ${email} - Contact HR required`);
-            return res.status(404).json({ 
+            // Employee doesn't exist - Show generic error (security: don't reveal if email exists)
+            console.log(`❌ Employee not found with email: ${email}`);
+            return res.status(401).json({ 
                 success: false,
-                message: "Your email address was not found in system, please contact to your HR",
-                messageTh: "ไม่พบอีเมลของคุณในระบบ กรุณาติดต่อ HR"
+                message: "Invalid email or password",
+                messageTh: "อีเมลหรือรหัสผ่านไม่ถูกต้อง"
             });
         }
 
         // Employee exists - LOGIN FLOW
         const employeeData = employeeDoc.data();
+        console.log(`✅ Employee found: ${employeeData.firstName} ${employeeData.lastName} (ID: ${employeeDoc.id})`);
+        console.log(`   Status: ${employeeData.status || 'N/A'}`);
+        console.log(`   Has password: ${!!employeeData.password}`);
 
         // Check if employee status is resigned
         if (employeeData.status && employeeData.status.toLowerCase() === 'resigned') {
@@ -438,8 +442,23 @@ exports.loginWithEmailPassword = async (req, res) => {
             });
         }
 
+        // Check if employee is force logged out (prevents relogin)
+        if (employeeData.forceLogout === true || employeeData.isBlocked === true) {
+            return res.status(403).json({ 
+                success: false,
+                message: "Your account has been logged out by administrator. Please contact HR for assistance.",
+                messageTh: "บัญชีของคุณถูกบังคับออกจากระบบโดยผู้ดูแลระบบ กรุณาติดต่อ HR เพื่อขอความช่วยเหลือ",
+                code: "FORCE_LOGOUT"
+            });
+        }
+
         // Check if employee has a password set
-        if (!employeeData.password) {
+        // Check if password field exists and has a value (not null, undefined, or empty string)
+        const hasPassword = employeeData.password !== null && 
+                           employeeData.password !== undefined && 
+                           String(employeeData.password).trim().length > 0;
+        
+        if (!hasPassword) {
             // Employee exists but no password - need to register
             console.log(`Employee ${email} exists but no password set - need to register`);
             return res.status(400).json({ 
@@ -448,14 +467,37 @@ exports.loginWithEmailPassword = async (req, res) => {
             });
         }
 
-        // Employee has password - verify it
-        if (employeeData.password !== password) {
+        // Employee has password - verify it (trim both to avoid whitespace issues)
+        const storedPassword = String(employeeData.password || '').trim();
+        const providedPassword = String(password || '').trim();
+        
+        console.log(`🔍 Password check for email: ${email}`);
+        console.log(`   Stored password exists: ${!!employeeData.password}`);
+        console.log(`   Stored password type: ${typeof employeeData.password}`);
+        console.log(`   Stored password length: ${storedPassword.length}`);
+        console.log(`   Provided password length: ${providedPassword.length}`);
+        console.log(`   Passwords match: ${storedPassword === providedPassword}`);
+        
+        // Debug: Show first and last characters (for debugging, not in production)
+        if (storedPassword.length > 0 && providedPassword.length > 0) {
+            console.log(`   Stored password first char: "${storedPassword[0]}" (code: ${storedPassword.charCodeAt(0)})`);
+            console.log(`   Stored password last char: "${storedPassword[storedPassword.length - 1]}" (code: ${storedPassword.charCodeAt(storedPassword.length - 1)})`);
+            console.log(`   Provided password first char: "${providedPassword[0]}" (code: ${providedPassword.charCodeAt(0)})`);
+            console.log(`   Provided password last char: "${providedPassword[providedPassword.length - 1]}" (code: ${providedPassword.charCodeAt(providedPassword.length - 1)})`);
+        }
+        
+        if (storedPassword !== providedPassword) {
+            console.log(`❌ Password mismatch for email: ${email}`);
+            console.log(`   Stored: "${storedPassword}" (length: ${storedPassword.length})`);
+            console.log(`   Provided: "${providedPassword}" (length: ${providedPassword.length})`);
             return res.status(401).json({ 
                 success: false,
                 message: "Invalid password",
                 messageTh: "รหัสผ่านไม่ถูกต้อง"
             });
         }
+        
+        console.log(`✅ Password verified for email: ${email}`);
 
         // Password matches - successful login
         console.log(`Successful login for employee: ${email}`);
@@ -892,9 +934,9 @@ exports.verifyToken = async (req, res) => {
 exports.mobileLogin = async (req, res) => {
     console.log("Mobile login called");
     try {
-        const { email, password } = req.body;
+        const { email, password } = req.body; // Password is optional (already verified by Firebase Auth)
         
-        // Validation
+        // Validation - only email is required
         if (!email) {
             return res.status(400).json({ 
                 success: false,
@@ -903,48 +945,8 @@ exports.mobileLogin = async (req, res) => {
             });
         }
 
-        if (!password) {
-            return res.status(400).json({ 
-                success: false,
-                message: "Password is required",
-                messageTh: "กรุณากรอกรหัสผ่าน"
-            });
-        }
-
-        // ✅ STEP 1: Verify email exists in employee table first
-        const employeeDoc = await findEmployeeByEmail(email);
-        
-        if (!employeeDoc) {
-            return res.status(404).json({ 
-                success: false,
-                message: "Employee not found in system. Please contact HR.",
-                messageTh: "ไม่พบข้อมูลพนักงานในระบบ กรุณาติดต่อ HR"
-            });
-        }
-
-        const employeeData = employeeDoc.data();
-
-        // ✅ STEP 2: Verify password
-        if (!employeeData.password) {
-            return res.status(400).json({ 
-                success: false,
-                message: "You need to register first",
-                messageTh: "กรุณาลงทะเบียนก่อน"
-            });
-        }
-
-        if (employeeData.password !== password) {
-            console.log(`❌ Invalid password for email: ${email}`);
-            return res.status(401).json({ 
-                success: false,
-                message: "Invalid password",
-                messageTh: "รหัสผ่านไม่ถูกต้อง"
-            });
-        }
-
-        console.log(`✅ Password verified for email: ${email}`);
-
-        // ✅ STEP 3: Verify user exists in Firebase Authentication
+        // ✅ STEP 1: Verify user exists in Firebase Authentication
+        // (Password was already verified by Firebase Auth SDK on client-side)
         let firebaseUser = null;
         try {
             firebaseUser = await admin.auth().getUserByEmail(email);
@@ -969,12 +971,35 @@ exports.mobileLogin = async (req, res) => {
             }
         }
 
+        // ✅ STEP 2: Verify email exists in employee table
+        const employeeDoc = await findEmployeeByEmail(email);
+        
+        if (!employeeDoc) {
+            return res.status(404).json({ 
+                success: false,
+                message: "Employee not found in system. Please contact HR.",
+                messageTh: "ไม่พบข้อมูลพนักงานในระบบ กรุณาติดต่อ HR"
+            });
+        }
+
+        const employeeData = employeeDoc.data();
+
         // ✅ STEP 2.5: Check if employee status is resigned
         if (employeeData.status && employeeData.status.toLowerCase() === 'resigned') {
             return res.status(403).json({ 
                 success: false,
                 message: "Your account has been resigned. Please contact HR for assistance.",
                 messageTh: "บัญชีของคุณถูกยกเลิกแล้ว กรุณาติดต่อ HR เพื่อขอความช่วยเหลือ"
+            });
+        }
+
+        // ✅ STEP 2.6: Check if employee is force logged out (prevents relogin)
+        if (employeeData.forceLogout === true || employeeData.isBlocked === true) {
+            return res.status(403).json({ 
+                success: false,
+                message: "Your account has been logged out by administrator. Please contact HR for assistance.",
+                messageTh: "บัญชีของคุณถูกบังคับออกจากระบบโดยผู้ดูแลระบบ กรุณาติดต่อ HR เพื่อขอความช่วยเหลือ",
+                code: "FORCE_LOGOUT"
             });
         }
 
@@ -987,7 +1012,7 @@ exports.mobileLogin = async (req, res) => {
             employeeData.authId = firebaseUser.uid;
         }
 
-        // ✅ STEP 4: Generate JWT token and return employee data
+        // ✅ STEP 6: Generate JWT token and return employee data
         console.log(`✅ Mobile login successful for: ${employeeData.firstName || ''} ${employeeData.lastName || ''}`);
         
         const jwtSecret = 'nano-hr-mobile-secret-key-2024';
@@ -1001,7 +1026,7 @@ exports.mobileLogin = async (req, res) => {
             positionName: employeeData.positionName
         };
         
-        const jwtToken = jwt.sign(jwtPayload, jwtSecret, { expiresIn: '3650d' }); // 10 years (10 * 365 days)
+        const jwtToken = jwt.sign(jwtPayload, jwtSecret, { expiresIn: '1500d' }); // 10 years (10 * 365 days)
 
         res.json({
             success: true,
