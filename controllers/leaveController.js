@@ -1785,6 +1785,7 @@ const getLeaveRequestById = async (req, res) => {
                 rejectedByRole: leaveData.rejectedByRole || null,
                 rejectedDate: leaveData.rejectedDate || null,
                 rejectedReason: leaveData.rejectedReason,
+                approvalHistory: leaveData.approvalHistory || [],
                 createdAt: leaveData.createdAt,
                 updatedAt: leaveData.updatedAt,
                 // Daily leave fields
