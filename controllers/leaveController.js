@@ -1766,6 +1766,7 @@ const getLeaveRequestById = async (req, res) => {
                 id: leaveRequestDoc.id,
                 uid: leaveData.uid,
                 employeeId: leaveData.employeeId,
+                positionName: leaveData.positionName || null,
                 leaveType: leaveData.leaveType,
                 leaveTypeName: leaveData.leaveTypeName,
                 leaveTypeNameEng: leaveData.leaveTypeNameEng,
