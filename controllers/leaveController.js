@@ -1547,6 +1547,33 @@ const updateLeaveRequestStatus = async (req, res) => {
             updateData.rejectedBy = approvedBy; // Store employee ID of rejecter
             updateData.rejectedDate = new Date().toISOString();
             updateData.rejectedReason = rejectedReason || null; // Store rejection reason
+            
+            // Determine rejecter's role/position
+            const employeesRef = db.collection("employees");
+            const rejecterQuery = await employeesRef.where("uid", "==", approvedBy).get();
+            
+            if (!rejecterQuery.empty) {
+                const rejecterData = rejecterQuery.docs[0].data();
+                const rejecterPosition = rejecterData.positionName;
+                const rejecterRole = rejecterData.role;
+                
+                // Determine rejection role based on position or role
+                if (rejecterPosition === 'Manager') {
+                    updateData.rejectedByRole = 'manager';
+                } else if (rejecterPosition === 'HR') {
+                    updateData.rejectedByRole = 'hr';
+                } else if (rejecterPosition === 'Warehouse Manager') {
+                    updateData.rejectedByRole = 'warehouse-manager';
+                } else if (rejecterPosition === 'Programmer (Team Lead)') {
+                    updateData.rejectedByRole = 'team-lead';
+                } else if (rejecterRole === 'approver' || rejecterRole === 'approver-three') {
+                    updateData.rejectedByRole = 'approver';
+                } else {
+                    updateData.rejectedByRole = rejecterPosition || rejecterRole || 'unknown';
+                }
+            } else {
+                updateData.rejectedByRole = 'unknown';
+            }
         }
 
         await leaveRequestRef.update(updateData);
@@ -1687,6 +1714,51 @@ const getLeaveRequestById = async (req, res) => {
 
         const leaveData = leaveRequestDoc.data();
 
+        // Handle rejectedBy fields with multiple field name variations
+        // Check for: rejectedBy, rejected_by, rejectedById, rejected_by_id, rejecterId, rejecter_id
+        const rejectedById = leaveData.rejectedBy || 
+                            leaveData.rejected_by || 
+                            leaveData.rejectedById || 
+                            leaveData.rejected_by_id || 
+                            leaveData.rejecterId || 
+                            leaveData.rejecter_id || 
+                            null;
+
+        // Check for existing name fields: rejectedByName, rejected_by_name, rejecterName, rejecter_name
+        let rejectedByName = leaveData.rejectedByName || 
+                            leaveData.rejected_by_name || 
+                            leaveData.rejecterName || 
+                            leaveData.rejecter_name || 
+                            null;
+
+        // If we have an ID but no name, fetch the rejecter's information
+        if (rejectedById && !rejectedByName && typeof rejectedById === 'string' && rejectedById.trim() !== '') {
+            try {
+                const employeesRef = db.collection("employees");
+                // Try querying by uid first (most common case)
+                let rejecterQuery = await employeesRef.where("uid", "==", rejectedById).get();
+                
+                // If not found by uid, try querying by employeeId as fallback
+                if (rejecterQuery.empty) {
+                    rejecterQuery = await employeesRef.where("employeeId", "==", rejectedById).get();
+                }
+                
+                if (!rejecterQuery.empty) {
+                    const rejecterData = rejecterQuery.docs[0].data();
+                    // Try to get full name, or construct from firstName/lastName
+                    rejectedByName = rejecterData.employeeName || 
+                                    rejecterData.employee_name ||
+                                    rejecterData.name ||
+                                    (rejecterData.firstName && rejecterData.lastName 
+                                        ? `${rejecterData.firstName} ${rejecterData.lastName}`.trim()
+                                        : rejecterData.firstName || rejecterData.lastName || null);
+                }
+            } catch (fetchError) {
+                console.error("❌ Error fetching rejecter information:", fetchError);
+                // Continue without name if fetch fails
+            }
+        }
+
         res.json({
             success: true,
             message: "Leave request retrieved successfully",
@@ -1708,6 +1780,10 @@ const getLeaveRequestById = async (req, res) => {
                 totalDays: leaveData.totalDays,
                 approvedBy: leaveData.approvedBy,
                 approvedDate: leaveData.approvedDate,
+                rejectedBy: rejectedById,
+                rejectedByName: rejectedByName,
+                rejectedByRole: leaveData.rejectedByRole || null,
+                rejectedDate: leaveData.rejectedDate || null,
                 rejectedReason: leaveData.rejectedReason,
                 createdAt: leaveData.createdAt,
                 updatedAt: leaveData.updatedAt,
@@ -2131,6 +2207,7 @@ const approveLeaveRequest = async (req, res) => {
             updateData.rejectedBy = userId; // Store employee ID of rejecter
             updateData.rejectedDate = new Date().toISOString();
             updateData.rejectedReason = rejectedReason || comment || null; // Store rejection reason (prefer rejectedReason, fallback to comment)
+            updateData.rejectedByRole = userApprovalLevel; // Store the role/level of rejecter (team-lead, manager, warehouse-manager, hr, or approver)
         }
         
         // Helper function to get proper status display names
