@@ -2886,6 +2886,11 @@ const getLeaveListByRole = async (req, res) => {
             }
             canSeeAllBranches = false;
             canSeeAllEmployees = false;
+        } else if (userPosition === "Warehouse Manager") {
+            // Warehouse Manager sees only Warehouse Worker and Warehouse Administrator data (all branches)
+            query = query.where("positionName", "in", ["Warehouse Worker", "Warehouse Administrator"]);
+            canSeeAllBranches = true;
+            canSeeAllEmployees = false;
         } else {
             // Regular employees see only their own data
             query = query.where("employeeId", "==", userId);
@@ -3072,6 +3077,11 @@ const getLeaveHistory = async (req, res) => {
                 query = query.where("branchCode", "in", branchBatch);
                 filterDescription = `Manager - Branches: ${branches.join(', ')}`;
             }
+            
+        } else if (userPosition === "Warehouse Manager") {
+            // Warehouse Manager sees only Warehouse Worker and Warehouse Administrator data (all statuses, all branches)
+            query = query.where("positionName", "in", ["Warehouse Worker", "Warehouse Administrator"]);
+            filterDescription = "Warehouse Manager - All Warehouse Worker and Warehouse Administrator leaves";
             
         } else {
             // Regular employees see only their own data
