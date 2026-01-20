@@ -1695,6 +1695,234 @@ const searchAttendanceByName = async (req, res) => {
     }
 };
 
+// Update attendance record
+const updateAttendance = async (req, res) => {
+    try {
+        const { attendanceId } = req.params;
+        const { updateData, currentUserData } = req.body;
+        
+        if (!attendanceId) {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance ID is required"
+            });
+        }
+        
+        if (!updateData) {
+            return res.status(400).json({
+                success: false,
+                message: "Update data is required"
+            });
+        }
+
+        // Get the attendance record
+        const attendanceRef = db.collection("employee-attendance").doc(attendanceId);
+        const attendanceDoc = await attendanceRef.get();
+        
+        if (!attendanceDoc.exists) {
+            return res.status(404).json({
+                success: false,
+                message: "Attendance record not found"
+            });
+        }
+
+        const existingData = attendanceDoc.data();
+        
+        // Prepare update data (exclude id and uid from updates)
+        const { id, uid, ...allowedUpdates } = updateData;
+        const finalUpdateData = {
+            ...allowedUpdates,
+            updatedAt: new Date().toISOString()
+        };
+
+        // Update the attendance record
+        await attendanceRef.update(finalUpdateData);
+
+        // Get updated data
+        const updatedDoc = await attendanceRef.get();
+        const updatedData = updatedDoc.data();
+
+        // Send FCM notification to Approvers (Management)
+        try {
+            const { sendPushNotification } = require('./notificationController');
+            
+            // Find all approvers (Management)
+            const employeesRef = db.collection("employees");
+            const approverQuery = await employeesRef.where("role", "in", ["approver", "approver-three"]).get();
+            
+            if (!approverQuery.empty) {
+                const allDeviceTokens = [];
+                const approverIds = [];
+                
+                approverQuery.forEach(doc => {
+                    const approverData = doc.data();
+                    approverIds.push(approverData.uid);
+                    
+                    // Get device tokens from approver
+                    let deviceTokens = approverData.deviceTokens || [];
+                    if ((!deviceTokens || deviceTokens.length === 0) && Array.isArray(approverData.devices)) {
+                        deviceTokens = approverData.devices
+                            .map(device => device && device.token)
+                            .filter(Boolean);
+                    }
+                    
+                    if (deviceTokens && deviceTokens.length > 0) {
+                        allDeviceTokens.push(...deviceTokens);
+                    }
+                });
+                
+                // Remove duplicates
+                const uniqueTokens = Array.from(new Set(allDeviceTokens));
+                
+                if (uniqueTokens.length > 0) {
+                    // Get employee data (whose attendance was updated)
+                    const employeeName = updatedData.employeeName || existingData.employeeName || 'An employee';
+                    const employeeId = updatedData.employeeId || existingData.employeeId;
+                    
+                    // Try to get employee nickname from employees collection
+                    let employeeNickname = null;
+                    try {
+                        const employeeQuery = await employeesRef.where("uid", "==", employeeId).limit(1).get();
+                        if (!employeeQuery.empty) {
+                            const empData = employeeQuery.docs[0].data();
+                            employeeNickname = empData.nickname || empData.nickName || null;
+                        }
+                    } catch (empError) {
+                        console.warn("Could not fetch employee nickname:", empError.message);
+                    }
+                    
+                    // Format employee name with nickname
+                    const employeeDisplayName = employeeNickname 
+                        ? `${employeeName} (${employeeNickname})`
+                        : employeeName;
+                    
+                    // Get current user data (who updated)
+                    let updaterName = 'Admin';
+                    let updaterNickname = null;
+                    if (currentUserData) {
+                        updaterName = currentUserData.name || currentUserData.employeeName || currentUserData.firstName || 'Admin';
+                        updaterNickname = currentUserData.nickname || currentUserData.nickName || null;
+                    }
+                    
+                    // Format updater name with nickname
+                    const updaterDisplayName = updaterNickname 
+                        ? `${updaterName} (${updaterNickname})`
+                        : updaterName;
+                    
+                    const date = updatedData.date || existingData.date || 'N/A';
+                    const checkInAt = updatedData.checkInAt || existingData.checkInAt || 'N/A';
+                    const checkOutAt = updatedData.checkOutAt || existingData.checkOutAt || null;
+                    
+                    // Track what changed (old vs new values)
+                    const oldCheckInAt = existingData.checkInAt || null;
+                    const newCheckInAt = updatedData.checkInAt || existingData.checkInAt || null;
+                    const oldCheckOutAt = existingData.checkOutAt || null;
+                    const newCheckOutAt = updatedData.checkOutAt || existingData.checkOutAt || null;
+                    
+                    // Build time change description (from old to new)
+                    let timeChangeText = '';
+                    let timeChangeTextTh = '';
+                    let oldTime = null;
+                    let newTime = null;
+                    
+                    // Determine which time was changed
+                    if (updateData.checkInAt && oldCheckInAt && oldCheckInAt !== newCheckInAt) {
+                        oldTime = oldCheckInAt;
+                        newTime = newCheckInAt;
+                        timeChangeText = `from ${oldTime} to ${newTime}`;
+                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                    } else if (updateData.checkOutAt && oldCheckOutAt && oldCheckOutAt !== newCheckOutAt) {
+                        oldTime = oldCheckOutAt;
+                        newTime = newCheckOutAt || 'N/A';
+                        timeChangeText = `from ${oldTime} to ${newTime}`;
+                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                    } else if (updateData.checkOutAt && !oldCheckOutAt && newCheckOutAt) {
+                        // New check-out added
+                        oldTime = 'N/A';
+                        newTime = newCheckOutAt;
+                        timeChangeText = `from ${oldTime} to ${newTime}`;
+                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                    } else if (updateData.checkInAt && !oldCheckInAt && newCheckInAt) {
+                        // New check-in added
+                        oldTime = 'N/A';
+                        newTime = newCheckInAt;
+                        timeChangeText = `from ${oldTime} to ${newTime}`;
+                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                    } else {
+                        // Fallback: show current times if no change detected
+                        oldTime = oldCheckInAt || oldCheckOutAt || 'N/A';
+                        newTime = newCheckInAt || newCheckOutAt || 'N/A';
+                        timeChangeText = `from ${oldTime} to ${newTime}`;
+                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                    }
+                    
+                    // Format updated at timestamp
+                    const updatedAtDate = new Date(finalUpdateData.updatedAt);
+                    const updatedAtFormatted = updatedAtDate.toLocaleString('en-US', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false
+                    });
+                    
+                    const title = "Attendance Updated";
+                    const titleTh = "อัปเดตการเข้างาน";
+                    const message = `${updaterDisplayName} update the attendance data of ${employeeDisplayName} for the attendance date of ${date} ${timeChangeText}. Updated at ${updatedAtFormatted}`;
+                    const messageTh = `${updaterDisplayName} อัปเดตข้อมูลการเข้างานของ ${employeeDisplayName} สำหรับวันที่ ${date} ${timeChangeTextTh}. อัปเดตเมื่อ ${updatedAtFormatted}`;
+                    
+                    // Send notification to all approvers
+                    await sendPushNotification(uniqueTokens, title, message, {
+                        type: 'attendance_updated',
+                        attendanceId: attendanceId,
+                        employeeId: employeeId,
+                        employeeName: employeeName,
+                        employeeNickname: employeeNickname || '',
+                        updaterName: updaterName,
+                        updaterNickname: updaterNickname || '',
+                        date: date,
+                        checkInAt: newCheckInAt,
+                        checkOutAt: newCheckOutAt || '',
+                        oldCheckInAt: oldCheckInAt,
+                        oldCheckOutAt: oldCheckOutAt || '',
+                        timeChangeText: timeChangeText,
+                        updatedAt: finalUpdateData.updatedAt,
+                        updatedAtFormatted: updatedAtFormatted
+                    });
+                    
+                    console.log(`📨 FCM notification sent to ${uniqueTokens.length} approver device(s) for attendance update`);
+                } else {
+                    console.log(`⚠️ No device tokens found for approvers`);
+                }
+            } else {
+                console.log(`⚠️ No approvers found in the system`);
+            }
+        } catch (notifError) {
+            console.error("❌ Error sending notification to approvers:", notifError);
+            // Don't fail the request if notification fails
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Attendance updated successfully",
+            data: {
+                id: attendanceId,
+                ...updatedData
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ Update attendance error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Internal server error",
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     checkInOut,
     getCheckInOutHistory,
@@ -1705,5 +1933,6 @@ module.exports = {
     getAttendanceByEmployeeId,
     getMyAttendanceHistory,
     searchEmployeeAttendance,
-    searchAttendanceByName
+    searchAttendanceByName,
+    updateAttendance
 };

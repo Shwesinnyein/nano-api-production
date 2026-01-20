@@ -11,6 +11,9 @@ router.get("/search-history", attendanceController.searchEmployeeAttendance);
 router.get("/search-by-name", attendanceController.searchAttendanceByName);
 router.get("/history", attendanceController.getAllAttendanceHistory);
 
+// Update attendance route (before parameterized routes)
+router.put("/update/:attendanceId", attendanceController.updateAttendance);
+
 // Parameterized routes
 router.get("/status/:employeeId", attendanceController.getTodayAttendanceStatus);
 router.get("/history/:employeeId", attendanceController.getCheckInOutHistory);
