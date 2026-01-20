@@ -2186,12 +2186,29 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
         
         // ✅ Send data-only payload for Android (reliable background delivery)
         if (androidTokens.length > 0) {
+            // Check if notification color is explicitly specified in data (only for attendance updates)
+            // Red color is ONLY applied when notificationColor is set OR isChanged is 'true'
+            // This ensures other notifications (leave, password reset, etc.) are NOT affected
+            const hasNotificationColor = stringifiedData.notificationColor && stringifiedData.notificationColor !== '';
+            const isChanged = stringifiedData.isChanged === 'true';
+            const hasColor = hasNotificationColor || isChanged;
+            const notificationColor = hasNotificationColor ? stringifiedData.notificationColor : '#FF0000'; // Use provided color or default red only when hasColor is true
+            
             const androidMessage = {
                 tokens: androidTokens,
                 data: stringifiedData, // Data-only for Android background reliability
                 android: {
-                    priority: 'high'
-                    // No notification block - app handles display from data payload
+                    priority: 'high',
+                    // Add notification block with color ONLY when explicitly requested (attendance updates)
+                    ...(hasColor && {
+                        notification: {
+                            title: title,
+                            body: body,
+                            color: notificationColor, // Red color for change indicator (only for attendance updates)
+                            sound: 'default',
+                            channelId: 'high_importance_channel'
+                        }
+                    })
                 }
             };
             
@@ -2219,6 +2236,10 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
         
         // ✅ Send notification + data payload for iOS (works reliably)
         if (iosTokens.length > 0) {
+            // Check if this is a change notification (attendance update)
+            const isChanged = stringifiedData.isChanged === 'true';
+            const notificationColor = stringifiedData.notificationColor || '#FF0000';
+            
             const iosMessage = {
                 tokens: iosTokens,
                 notification: {
@@ -2239,8 +2260,17 @@ const sendPushNotification = async (deviceTokens, title, body, data = {}, recipi
                             },
                             sound: 'default',
                             badge: badgeCount,
-                            contentAvailable: true
-                        }
+                            contentAvailable: true,
+                            // Add custom data for iOS to handle color in app
+                            ...(isChanged && {
+                                'mutable-content': 1 // Allow app to modify notification
+                            })
+                        },
+                        // Add color info in custom data for iOS app to use
+                        ...(isChanged && {
+                            notificationColor: notificationColor,
+                            isChanged: 'true'
+                        })
                     }
                 }
             };

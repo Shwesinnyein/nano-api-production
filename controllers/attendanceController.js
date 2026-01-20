@@ -1868,12 +1868,12 @@ const updateAttendance = async (req, res) => {
                         hour12: false
                     });
                     
-                    const title = "Attendance Updated";
-                    const titleTh = "อัปเดตการเข้างาน";
+                    const title = "Attendance Updated Notification";
+                    const titleTh = "การแจ้งเตือนอัปเดตการเข้างาน";
                     const message = `${updaterDisplayName} update the attendance data of ${employeeDisplayName} for the attendance date of ${date} ${timeChangeText}. Updated at ${updatedAtFormatted}`;
                     const messageTh = `${updaterDisplayName} อัปเดตข้อมูลการเข้างานของ ${employeeDisplayName} สำหรับวันที่ ${date} ${timeChangeTextTh}. อัปเดตเมื่อ ${updatedAtFormatted}`;
                     
-                    // Send notification to all approvers
+                    // Send notification to all approvers with red color indicator
                     await sendPushNotification(uniqueTokens, title, message, {
                         type: 'attendance_updated',
                         attendanceId: attendanceId,
@@ -1889,7 +1889,9 @@ const updateAttendance = async (req, res) => {
                         oldCheckOutAt: oldCheckOutAt || '',
                         timeChangeText: timeChangeText,
                         updatedAt: finalUpdateData.updatedAt,
-                        updatedAtFormatted: updatedAtFormatted
+                        updatedAtFormatted: updatedAtFormatted,
+                        notificationColor: '#FF0000', // Red color for change indicator
+                        isChanged: 'true' // Flag to indicate this is a change notification
                     });
                     
                     console.log(`📨 FCM notification sent to ${uniqueTokens.length} approver device(s) for attendance update`);
