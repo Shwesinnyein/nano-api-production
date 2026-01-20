@@ -1715,9 +1715,22 @@ const updateAttendance = async (req, res) => {
             });
         }
 
-        // Get the attendance record
-        const attendanceRef = db.collection("employee-attendance").doc(attendanceId);
-        const attendanceDoc = await attendanceRef.get();
+        // Get the attendance record by attendanceId or uid
+        let attendanceRef = db.collection("employee-attendance").doc(attendanceId);
+        let attendanceDoc = await attendanceRef.get();
+        
+        // If not found by attendanceId, try to find by uid
+        if (!attendanceDoc.exists && updateData.uid) {
+            const query = db.collection("employee-attendance")
+                .where("uid", "==", updateData.uid)
+                .limit(1);
+            const querySnapshot = await query.get();
+            
+            if (!querySnapshot.empty) {
+                attendanceRef = querySnapshot.docs[0].ref;
+                attendanceDoc = querySnapshot.docs[0];
+            }
+        }
         
         if (!attendanceDoc.exists) {
             return res.status(404).json({
@@ -1728,14 +1741,25 @@ const updateAttendance = async (req, res) => {
 
         const existingData = attendanceDoc.data();
         
-        // Prepare update data (exclude id and uid from updates)
-        const { id, uid, ...allowedUpdates } = updateData;
+        // Prepare update data (exclude id and uid from updates, but keep uid for querying)
+        const { id, ...allowedUpdates } = updateData;
         const finalUpdateData = {
             ...allowedUpdates,
             updatedAt: new Date().toISOString()
         };
+        
+        // Add updater information to the attendance record
+        if (currentUserData) {
+            finalUpdateData.updatedBy = currentUserData.uid || currentUserData.employeeId || null;
+            finalUpdateData.updatedByName = currentUserData.name || 
+                                           currentUserData.employeeName || 
+                                           (currentUserData.firstName && currentUserData.lastName 
+                                               ? `${currentUserData.firstName} ${currentUserData.lastName}`.trim()
+                                               : currentUserData.firstName || currentUserData.lastName || null);
+            finalUpdateData.updatedByNickname = currentUserData.nickname || currentUserData.nickName || null;
+        }
 
-        // Update the attendance record
+        // Update the attendance record in employee-attendance collection
         await attendanceRef.update(finalUpdateData);
 
         // Get updated data
@@ -1800,7 +1824,16 @@ const updateAttendance = async (req, res) => {
                     let updaterName = 'Admin';
                     let updaterNickname = null;
                     if (currentUserData) {
-                        updaterName = currentUserData.name || currentUserData.employeeName || currentUserData.firstName || 'Admin';
+                        // Try to get name in order: name -> employeeName -> firstName+lastName -> firstName -> Admin
+                        if (currentUserData.name) {
+                            updaterName = currentUserData.name;
+                        } else if (currentUserData.employeeName) {
+                            updaterName = currentUserData.employeeName;
+                        } else if (currentUserData.firstName && currentUserData.lastName) {
+                            updaterName = `${currentUserData.firstName} ${currentUserData.lastName}`.trim();
+                        } else if (currentUserData.firstName) {
+                            updaterName = currentUserData.firstName;
+                        }
                         updaterNickname = currentUserData.nickname || currentUserData.nickName || null;
                     }
                     
@@ -1811,49 +1844,31 @@ const updateAttendance = async (req, res) => {
                     
                     const date = updatedData.date || existingData.date || 'N/A';
                     const checkInAt = updatedData.checkInAt || existingData.checkInAt || 'N/A';
-                    const checkOutAt = updatedData.checkOutAt || existingData.checkOutAt || null;
+                    const checkOutAt = updatedData.checkOutAt || existingData.checkOutAt || null; // Keep for display only, not tracked for changes
                     
-                    // Track what changed (old vs new values)
-                    const oldCheckInAt = existingData.checkInAt || null;
-                    const newCheckInAt = updatedData.checkInAt || existingData.checkInAt || null;
-                    const oldCheckOutAt = existingData.checkOutAt || null;
-                    const newCheckOutAt = updatedData.checkOutAt || existingData.checkOutAt || null;
+                    // Track check-in time changes only (no check-out tracking)
+                    // Use oldCheckInAt from updateData if provided (frontend sends it), otherwise use existingData
+                    const oldCheckInAt = updateData.oldCheckInAt || existingData.checkInAt || null;
+                    const newCheckInAt = updateData.checkInAt || existingData.checkInAt || null;
                     
-                    // Build time change description (from old to new)
+                    // Build time change description (from old to new) - only for check-in
                     let timeChangeText = '';
                     let timeChangeTextTh = '';
-                    let oldTime = null;
-                    let newTime = null;
                     
-                    // Determine which time was changed
+                    // Only track check-in time changes
                     if (updateData.checkInAt && oldCheckInAt && oldCheckInAt !== newCheckInAt) {
-                        oldTime = oldCheckInAt;
-                        newTime = newCheckInAt;
-                        timeChangeText = `from ${oldTime} to ${newTime}`;
-                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
-                    } else if (updateData.checkOutAt && oldCheckOutAt && oldCheckOutAt !== newCheckOutAt) {
-                        oldTime = oldCheckOutAt;
-                        newTime = newCheckOutAt || 'N/A';
-                        timeChangeText = `from ${oldTime} to ${newTime}`;
-                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
-                    } else if (updateData.checkOutAt && !oldCheckOutAt && newCheckOutAt) {
-                        // New check-out added
-                        oldTime = 'N/A';
-                        newTime = newCheckOutAt;
-                        timeChangeText = `from ${oldTime} to ${newTime}`;
-                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                        // Check-in time changed
+                        timeChangeText = `from ${oldCheckInAt} to ${newCheckInAt}`;
+                        timeChangeTextTh = `จาก ${oldCheckInAt} เป็น ${newCheckInAt}`;
                     } else if (updateData.checkInAt && !oldCheckInAt && newCheckInAt) {
                         // New check-in added
-                        oldTime = 'N/A';
-                        newTime = newCheckInAt;
-                        timeChangeText = `from ${oldTime} to ${newTime}`;
-                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                        timeChangeText = `from N/A to ${newCheckInAt}`;
+                        timeChangeTextTh = `จาก N/A เป็น ${newCheckInAt}`;
                     } else {
-                        // Fallback: show current times if no change detected
-                        oldTime = oldCheckInAt || oldCheckOutAt || 'N/A';
-                        newTime = newCheckInAt || newCheckOutAt || 'N/A';
-                        timeChangeText = `from ${oldTime} to ${newTime}`;
-                        timeChangeTextTh = `จาก ${oldTime} เป็น ${newTime}`;
+                        // Fallback: show current check-in time if no change detected
+                        const displayTime = newCheckInAt || oldCheckInAt || 'N/A';
+                        timeChangeText = `from ${displayTime} to ${displayTime}`;
+                        timeChangeTextTh = `จาก ${displayTime} เป็น ${displayTime}`;
                     }
                     
                     // Format updated at timestamp
@@ -1884,9 +1899,9 @@ const updateAttendance = async (req, res) => {
                         updaterNickname: updaterNickname || '',
                         date: date,
                         checkInAt: newCheckInAt,
-                        checkOutAt: newCheckOutAt || '',
+                        checkOutAt: checkOutAt || '',
                         oldCheckInAt: oldCheckInAt,
-                        oldCheckOutAt: oldCheckOutAt || '',
+                        newCheckInAt: newCheckInAt,
                         timeChangeText: timeChangeText,
                         updatedAt: finalUpdateData.updatedAt,
                         updatedAtFormatted: updatedAtFormatted,
